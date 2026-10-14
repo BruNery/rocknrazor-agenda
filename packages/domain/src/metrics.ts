@@ -82,20 +82,30 @@ export function barberMetrics(x: MetricsInput): BarberMetrics {
 }
 
 export interface ShopMetrics { total: BarberMetrics; perBarber: BarberMetrics[]; ranking: { employeeId: string; revenueCents: number; share: number }[] }
-/** Visão do administrador: todos os barbeiros e o total da loja. */
+/** Visão do administrador: todos os barbeiros e o total da loja. Clientes são contados ao nível da loja (sem duplicar quem foi a vários barbeiros). */
 export function shopMetrics(base: Omit<MetricsInput, 'employeeId'>, employeeIds: string[]): ShopMetrics {
   const perBarber = employeeIds.map(id => barberMetrics({ ...base, employeeId: id }));
-  const revenue = perBarber.reduce((t, m) => t + m.revenueCents, 0);
   const sum = (f: (m: BarberMetrics) => number) => perBarber.reduce((t, m) => t + f(m), 0);
-  const sales = perBarber.reduce((t, m) => t + (m.avgTicketCents ? Math.round(m.revenueCents / m.avgTicketCents) : 0), 0);
+  const revenue = sum(m => m.revenueCents);
+  const mine = base.sales.filter(s => employeeIds.includes(s.employeeId));
+  const inR = mine.filter(s => inRange(s.date, base.from, base.to));
+  const customers = new Set(inR.map(s => s.customerId));
+  const firstEver = new Map<string, DateStr>(); for (const s of mine) if (s.date <= base.to) { const f = firstEver.get(s.customerId); if (!f || s.date < f) firstEver.set(s.customerId, s.date); }
+  const windowDays = base.regularWindowDays ?? 90, minVisits = base.regularMinVisits ?? 3;
+  const winStart = new Date(Date.UTC(+base.to.slice(0, 4), +base.to.slice(5, 7) - 1, +base.to.slice(8)) - (windowDays - 1) * 86400000).toISOString().slice(0, 10);
+  const visits = new Map<string, number>(); for (const s of mine) if (inRange(s.date, winStart, base.to)) visits.set(s.customerId, (visits.get(s.customerId) ?? 0) + 1);
+  const before = new Set(mine.filter(s => s.date < base.from).map(s => s.customerId));
+  const occ = perBarber.map(m => m.occupancy).filter((o): o is number => o !== null);
+  const bookings = sum(m => m.bookings);
   const total: BarberMetrics = {
     employeeId: 'loja', from: base.from, to: base.to,
-    bookings: sum(m => m.bookings), noShows: sum(m => m.noShows), cancelled: sum(m => m.cancelled), noShowRate: sum(m => m.bookings) ? sum(m => m.noShows) / sum(m => m.bookings) : 0,
+    bookings, noShows: sum(m => m.noShows), cancelled: sum(m => m.cancelled), noShowRate: bookings ? sum(m => m.noShows) / bookings : 0,
     services: sum(m => m.services), revenueServicesCents: sum(m => m.revenueServicesCents), revenueProductsCents: sum(m => m.revenueProductsCents), revenueCents: revenue,
-    avgTicketCents: sales ? Math.round(revenue / sales) : 0, productUnits: sum(m => m.productUnits), salesWithProduct: sum(m => m.salesWithProduct),
-    productAttachRate: sales ? sum(m => m.salesWithProduct) / sales : 0,
-    uniqueCustomers: new Set(base.sales.filter(s => employeeIds.includes(s.employeeId) && s.date >= base.from && s.date <= base.to).map(s => s.customerId)).size,
-    newCustomers: sum(m => m.newCustomers), regularCustomers: sum(m => m.regularCustomers), returnRate: 0, occupancy: null,
+    avgTicketCents: inR.length ? Math.round(revenue / inR.length) : 0, productUnits: sum(m => m.productUnits), salesWithProduct: sum(m => m.salesWithProduct),
+    productAttachRate: inR.length ? sum(m => m.salesWithProduct) / inR.length : 0,
+    uniqueCustomers: customers.size, newCustomers: [...customers].filter(c => inRange(firstEver.get(c)!, base.from, base.to)).length,
+    regularCustomers: [...visits.values()].filter(n => n >= minVisits).length, returnRate: customers.size ? [...customers].filter(c => before.has(c)).length / customers.size : 0,
+    occupancy: occ.length ? occ.reduce((a, b) => a + b, 0) / occ.length : null,
     topServices: mergeRank(perBarber.map(m => m.topServices)), topProducts: mergeRank(perBarber.map(m => m.topProducts)),
     byWeekday: Array.from({ length: 7 }, (_, d) => sum(m => m.byWeekday[d])),
   };
@@ -105,4 +115,18 @@ function mergeRank(lists: Ranked[][]): Ranked[] {
   const m = new Map<string, Ranked>();
   for (const r of lists.flat()) { const c = m.get(r.id) ?? { ...r, qty: 0, cents: 0 }; c.qty += r.qty; c.cents += r.cents; m.set(r.id, c); }
   return [...m.values()].sort((a, b) => b.cents - a.cents || a.name.localeCompare(b.name));
+}
+
+export interface DayRevenue { date: DateStr; servicesCents: number; productsCents: number }
+/** Receita por dia (todos os dias do intervalo, mesmo sem vendas). `employeeIds` nulo = loja toda. */
+export function revenueByDay(sales: Sale[], employeeIds: string[] | null, from: DateStr, to: DateStr): DayRevenue[] {
+  const out: DayRevenue[] = []; const idx = new Map<DateStr, DayRevenue>();
+  for (let d = from; d <= to; d = new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8) + 1)).toISOString().slice(0, 10)) { const r = { date: d, servicesCents: 0, productsCents: 0 }; out.push(r); idx.set(d, r); }
+  for (const s of sales) { if (employeeIds && !employeeIds.includes(s.employeeId)) continue; const r = idx.get(s.date); if (r) { r.servicesCents += saleCents(s, 'service'); r.productsCents += saleCents(s, 'product'); } }
+  return out;
+}
+/** Período imediatamente anterior, com a mesma duração (para comparar). */
+export function periodBefore(from: DateStr, to: DateStr): { from: DateStr; to: DateStr } {
+  const len = dayDiff(from, to) + 1; const add = (d: DateStr, n: number) => new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8) + n)).toISOString().slice(0, 10);
+  return { from: add(from, -len), to: add(from, -1) };
 }

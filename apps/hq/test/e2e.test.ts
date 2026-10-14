@@ -121,3 +121,78 @@ describe('HQ: vistas e tema', () => {
     expect(errors).toEqual([]);
   });
 });
+
+describe('HQ: perfis, vendas, avisos e dashboards (só números)', () => {
+  let p: Page; const errs: string[] = [];
+  beforeAll(async () => {
+    p = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    p.on('pageerror', e => errs.push(e.message));
+    await p.clock.install({ time: new Date('2026-10-14T07:00:00Z') });
+    await p.goto(url);
+  });
+  const tile = (name: string) => p.locator('.kpi.big', { hasText: name }).locator('.kv');
+  const role = async (r: string) => { await p.selectOption('#role', r); };
+
+  it('admin abre o dashboard da loja: KPIs, gráficos, ranking dos 4 barbeiros', async () => {
+    await p.click('[data-view=dash]'); await p.waitForSelector('#dash');
+    expect(await p.locator('.dctl h2').textContent()).toContain('Loja inteira');
+    expect(await p.locator('.kpi.big').count()).toBe(4);
+    expect(await tile('Receita').textContent()).toMatch(/€/);
+    expect(await p.locator('.panelc svg').count()).toBeGreaterThanOrEqual(2);
+    expect(await p.locator('tr.clk').count()).toBe(4);
+    await p.click('tr.clk >> nth=1'); expect(await p.locator('.dctl h2').textContent()).toContain('Marcos');
+    await p.selectOption('#dwho', 'all');
+  });
+  it('privacidade: o dashboard não mostra nomes, telefones nem e-mails de clientes', async () => {
+    const txt = await p.locator('#dash').innerText();
+    const names: string[] = await p.evaluate(() => (window as any).__rr.store.customers.map((c: any) => c.name));
+    for (const n of names) expect(txt).not.toContain(n);
+    expect(txt).not.toMatch(/exemplo|@|\+351/);
+    const html = await p.locator('#dash').innerHTML();
+    expect(html).not.toMatch(/data-customer|customerId/);
+  });
+  it('período muda os números e as datas; comparação com o período anterior', async () => {
+    const before = await p.locator('.dctl p').first().textContent(); await p.click('[data-period="7"]');
+    expect(await p.locator('.dctl p').first().textContent()).not.toBe(before);
+    expect(await p.locator('.kpi.big .dl').first().textContent()).toMatch(/vs período anterior|sem período/);
+  });
+  it('tooltip aparece ao passar o rato numa barra', async () => {
+    await p.hover('.chart svg rect[data-tip] >> nth=3'); await p.waitForSelector('.tip:not([hidden])');
+    expect(await p.locator('.tip').textContent()).toMatch(/Serviços .* Produtos .* Total/);
+  });
+  it('registar atendimento com produto actualiza os atendimentos e a receita do dashboard', async () => {
+    await p.click('[data-view=dash]'); await p.click('[data-period="7"]');
+    const atBefore = Number(await tile('Atendimentos').textContent());
+    const receitaBefore: number = await p.evaluate(() => (window as any).__rr.store.sales.reduce((t: number, s: any) => t + s.items.reduce((u: number, i: any) => u + i.qty * i.unitCents, 0), 0));
+    await p.click('[data-view=day]'); await p.locator('.blk', { hasText: 'Rui (exemplo)' }).first().click(); await p.waitForSelector('#df');
+    await p.click('[data-act=d-sale]'); await p.waitForSelector('#salef');
+    await p.fill('[data-sale=prod][data-id=pomada]', '2'); await p.selectOption('#s-pay', 'mbway');
+    expect(await p.textContent('#sale-total')).toBe('€ 55'); // corte 17 + barba 8 + 2 pomadas a 15
+    await p.click('#salef button[type=submit]'); await p.waitForSelector('text=Atendimento registado');
+    expect(await p.locator('#df', { hasText: 'Atendimento registado · € 55' }).count()).toBe(1);
+    const last = await p.evaluate(() => { const s = (window as any).__rr.store.sales.at(-1); return { pay: s.payment, emp: s.employeeId, n: s.items.length }; });
+    expect(last).toEqual({ pay: 'mbway', emp: 'andre', n: 3 });
+    await p.click('[data-act=d-close]'); await p.click('[data-view=dash]');
+    expect(Number(await tile('Atendimentos').textContent())).toBe(atBefore + 1);
+    expect(receitaBefore).toBeGreaterThan(0);
+  });
+  it('barbeiro vê só a sua agenda, a sua lista e o seu dashboard (sem seletor de barbeiro nem ranking)', async () => {
+    await role('marcos');
+    expect(await p.locator('.dctl h2').textContent()).toContain('Marcos'); expect(await p.locator('#dwho').count()).toBe(0); expect(await p.locator('tr.clk').count()).toBe(0);
+    await p.click('[data-view=day]'); expect(await p.locator('.col').count()).toBe(1);
+    expect(await p.locator('.head div').allTextContents()).toEqual(expect.arrayContaining([expect.stringContaining('Marcos')]));
+    expect(await p.locator('.blk', { hasText: 'Rui' }).count()).toBe(0);
+    await p.click('[data-view=list]');
+    const rows = await p.locator('.list tbody tr td:nth-child(2)').allTextContents(); expect(rows.length).toBeGreaterThan(0); for (const r of rows) expect(r).toContain('Marcos');
+  });
+  it('aviso para o barbeiro quando alguém lhe cria uma marcação', async () => {
+    await role('admin'); await p.click('[data-view=day]');
+    const b = (await p.locator('.col').nth(1).boundingBox())!; await p.mouse.click(b.x + b.width * 0.5, b.y + ((900 - 540) / 10) * 16 + 3); // Marcos 15:00
+    await p.waitForSelector('#newf'); await p.fill('#f-name', 'Cliente do aviso'); await p.click('#newf button[type=submit]'); await p.waitForSelector('.toast');
+    await role('marcos');
+    expect(await p.locator('.badge').textContent()).toBe('1');
+    await p.click('[data-act=bell]'); expect(await p.locator('.bellp li').first().textContent()).toContain('Nova marcação: Cliente do aviso');
+    await p.click('[data-act=bell-read]'); expect(await p.locator('.badge').count()).toBe(0);
+    expect(errs).toEqual([]);
+  });
+});

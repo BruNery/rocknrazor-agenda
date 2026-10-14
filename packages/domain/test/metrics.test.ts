@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { barberMetrics, shopMetrics, type Sale, type Booking } from '../src';
+import { barberMetrics, shopMetrics, revenueByDay, periodBefore, type Sale, type Booking } from '../src';
 
 const svc = (cents: number, name = 'Corte Premium', id = 'corte') => ({ kind: 'service' as const, refId: id, name, qty: 1, unitCents: cents });
 const prod = (cents: number, qty = 1, name = 'Pomada', id = 'pomada') => ({ kind: 'product' as const, refId: id, name, qty, unitCents: cents });
@@ -61,5 +61,25 @@ describe('visão do administrador', () => {
     expect(s.ranking.reduce((t, r) => t + r.share, 0)).toBeCloseTo(1);
     expect(s.total.avgTicketCents).toBe(Math.round(13800 / 5));
     expect(s.total.topProducts[0].qty).toBe(3);
+  });
+});
+
+describe('loja: clientes sem duplicar, receita por dia, período anterior, privacidade', () => {
+  it('cliente que foi a 2 barbeiros conta uma vez e pode ser fixo ao nível da loja', () => {
+    const ss = [sale('1', 'a', 'x', '2026-10-01', [svc(1700)]), sale('2', 'a', 'x', '2026-10-05', [svc(1700)]), sale('3', 'b', 'x', '2026-10-09', [svc(1700)])];
+    const s = shopMetrics({ from: '2026-10-01', to: '2026-10-14', bookings: [], sales: ss }, ['a', 'b']);
+    expect(s.total.uniqueCustomers).toBe(1); expect(s.total.newCustomers).toBe(1); expect(s.total.regularCustomers).toBe(1);
+    expect(s.perBarber.map(m => m.regularCustomers)).toEqual([0, 0]);
+  });
+  it('revenueByDay cobre todos os dias e separa serviços de produtos', () => {
+    const r = revenueByDay(sales, ['a'], '2026-10-12', '2026-10-14');
+    expect(r.map(d => d.date)).toEqual(['2026-10-12', '2026-10-13', '2026-10-14']);
+    expect(r[1]).toEqual({ date: '2026-10-13', servicesCents: 1700 + 2500, productsCents: 3000 }); expect(r[2].servicesCents).toBe(0);
+    expect(revenueByDay(sales, null, '2026-10-12', '2026-10-12')[0].servicesCents).toBe(1700);
+  });
+  it('periodBefore tem a mesma duração e termina na véspera', () => { expect(periodBefore('2026-10-08', '2026-10-14')).toEqual({ from: '2026-10-01', to: '2026-10-07' }); });
+  it('privacidade: os indicadores nunca contêm identificadores de clientes', () => {
+    const json = JSON.stringify(shopMetrics(base, ['a', 'b']));
+    for (const c of ['c1', 'c2', 'c3', 'c9']) expect(json).not.toContain(`"${c}"`);
   });
 });

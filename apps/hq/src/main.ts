@@ -1,21 +1,24 @@
 import { addDays, weekday, type Conflict, type DateStr } from '@rr/domain';
-import { Store, EMPLOYEES, SERVICES, STATUSES, COUNTRY_CODES, fmt, type B } from './store';
+import { Store, EMPLOYEES, SERVICES, STATUSES, COUNTRY_CODES, PRODUCTS, PAYMENTS, fmt, type B } from './store';
+import { dashHtml, eur, type Period } from './dash';
 
 const START = 540, END = 1140;
 const store = new Store();
-type View = 'day' | 'week' | 'list';
-const S = { view: 'day' as View, date: store.today(), emp: 'andre', zoom: 16, sel: null as string | null, toast: '', showLog: false };
+type View = 'day' | 'week' | 'list' | 'dash';
+const S = { role: 'admin' as string, dashWho: 'all' as string, period: '30' as Period, bell: false, view: 'day' as View, date: store.today(), emp: 'andre', zoom: 16, sel: null as string | null, toast: '', showLog: false };
 const $app = document.getElementById('app')!;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 const empName = (id: string) => { const e = EMPLOYEES.find(x => x.id === id)!; return `${e.name} (${e.nick})`; };
 const svcName = (ids: string[]) => ids.map(i => SERVICES.find(s => s.id === i)!.name).join(' + ');
 const dayLabel = (d: DateStr, long = true) => new Intl.DateTimeFormat('pt-PT', { weekday: long ? 'long' : 'short', day: 'numeric', month: long ? 'long' : 'short', timeZone: 'UTC' }).format(new Date(d + 'T00:00:00Z'));
+const isAdmin = () => S.role === 'admin';
+const visibleEmps = () => isAdmin() ? EMPLOYEES : EMPLOYEES.filter(e => e.id === S.role);
 const monday = (d: DateStr) => addDays(d, -((weekday(d) + 6) % 7));
 
 type Col = { emp: string; date: DateStr; label: string; sub: string };
 function columns(): Col[] {
   if (S.view === 'week') return Array.from({ length: 6 }, (_, i) => { const d = addDays(monday(S.date), i); return { emp: S.emp, date: d, label: dayLabel(d, false), sub: empName(S.emp) }; });
-  return EMPLOYEES.map(e => ({ emp: e.id, date: S.date, label: `${e.name} (${e.nick})`, sub: '' }));
+  return visibleEmps().map(e => ({ emp: e.id, date: S.date, label: `${e.name} (${e.nick})`, sub: '' }));
 }
 
 function lanes(items: B[]): Map<string, [number, number]> {
@@ -49,7 +52,7 @@ function agendaHtml(): string {
 
 function listHtml(): string {
   const days = S.view === 'list' ? [S.date] : [];
-  const rows = store.bookings.filter(b => days.includes(b.date)).sort((a, b) => a.startMin - b.startMin);
+  const rows = store.bookings.filter(b => days.includes(b.date) && visibleEmps().some(e => e.id === b.employeeId)).sort((a, b) => a.startMin - b.startMin);
   return `<div class="list"><table><thead><tr><th>Hora</th><th>Colaborador</th><th>Cliente</th><th>Serviço</th><th>Origem</th><th>Estado</th></tr></thead><tbody>${rows.map(b => `<tr data-id="${b.id}"><td>${fmt(b.startMin)}–${fmt(b.endMin)}</td><td>${esc(empName(b.employeeId))}</td><td>${esc(store.customer(b.customerId).name)}</td><td>${esc(svcName(b.serviceIds))}</td><td>${b.source === 'online' ? 'Online' : 'HQ'}</td><td><span class="pill ${b.status === 'confirmed' ? 'ok' : 'bad'}">${STATUSES.find(x => x.id === b.status)!.name}</span></td></tr>`).join('') || '<tr><td colspan="6">Sem marcações neste dia.</td></tr>'}</tbody></table></div>`;
 }
 
@@ -84,12 +87,12 @@ function drawerHtml(): string {
        ${d.adding ? `<div class="addlist">${free.map(s => `<button type="button" class="btn" data-act="d-addsvc" data-v="${s.id}">${esc(s.name)} · ${s.durationMin} min</button>`).join('')}</div>` : ''}
        ${d.svcs.map(id => { const s = SERVICES.find(x => x.id === id)!; return `<div class="svc"><span class="dot ${s.cls}"></span><div><b>${esc(s.name)}</b><div class="muted">${s.durationMin} min · ${euro(s.price)}</div></div>${d.svcs.length > 1 ? `<button type="button" class="btn icon" data-act="d-delsvc" data-v="${id}" aria-label="Remover ${esc(s.name)}">🗑</button>` : ''}</div>`; }).join('')}
        <p class="muted" style="margin:8px 0 0">Total: <b>${total} minutos</b> · ${euro(price)} · termina às ${fmt(d.start + total)}</p></div>
-     <div class="card"><div class="line"><label for="d-emp">Colaborador</label><select id="d-emp" data-k="emp">${EMPLOYEES.map(e => `<option value="${e.id}" ${e.id === d.emp ? 'selected' : ''}>${esc(e.name)} (${esc(e.nick)})</option>`).join('')}</select></div></div>
+     <div class="card"><div class="line"><label for="d-emp">Colaborador</label><select id="d-emp" data-k="emp">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === d.emp ? 'selected' : ''}>${esc(e.name)} (${esc(e.nick)})</option>`).join('')}</select></div></div>
      <div class="card"><div class="field" style="margin:0"><label for="d-notes">Notas</label><textarea id="d-notes" data-k="notes" rows="3">${esc(d.notes)}</textarea></div></div>
      <p class="hint">Marcação criada ${new Date(b.createdAt).toLocaleDateString('pt-PT')} ${new Date(b.createdAt).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} ${b.source === 'online' ? 'pela reserva online' : 'no HQ'}.</p>
      ${S.showLog ? `<ul class="log">${b.log.map(l => `<li>${new Date(l.at).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} · ${esc(l.text)}</li>`).join('')}</ul>` : ''}
      <h3 style="margin-top:20px">Visitas anteriores</h3>${prev.map(p => `<div class="visit"><div><b>${esc(svcName(p.serviceIds))}</b><div class="muted">Colaborador: ${esc(empName(p.employeeId))}</div></div><div class="muted r">${dd(p.date)}<br>${fmt(p.startMin)}</div></div>`).join('') || '<p class="muted">Sem visitas anteriores.</p>'}</section></div>
-   <footer class="df"><button type="button" class="btn danger solid" data-act="d-del">Apagar</button><span class="spacer"></span><button class="btn primary big" type="submit">Guardar</button></footer></form></div>`;
+   <footer class="df"><button type="button" class="btn danger solid" data-act="d-del">Apagar</button><span class="spacer"></span>${b.saleId ? `<span class="muted">Atendimento registado · ${eur(store.sales.find(x => x.id === b.saleId)!.items.reduce((t, i) => t + i.qty * i.unitCents, 0))}</span>` : b.status === 'cancelled' ? '' : `<button type="button" class="btn" data-act="d-sale">Registar atendimento</button>`}<button class="btn primary big" type="submit">Guardar</button></footer></form></div>`;
 }
 
 function modalHtml(): string {
@@ -97,15 +100,21 @@ function modalHtml(): string {
   const shell = (title: string, body: string, acts: string) => `<div class="scrim"><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">${title}</h2>${body}<div class="acts">${acts}</div></div></div>`;
   if (m.kind === 'conflict') return shell('Conflito de marcações', `<p>Esta marcação coincide com:</p><ul class="conf">${m.conflicts.map(c => `<li>${confText(c)}</li>`).join('')}</ul>`, `<button class="btn" data-act="m-no">Voltar</button><button class="btn primary" data-act="m-force">Marcar mesmo assim</button>`);
   if (m.kind === 'notify') return shell(esc(m.title), `<p>Queres notificar o cliente? (Nesta demonstração nenhuma mensagem é enviada.)</p>`, `<button class="btn" data-act="m-no">Voltar</button><button class="btn" data-act="m-silent">Não notificar</button><button class="btn primary" data-act="m-notify">Notificar cliente</button>`);
+  if (m.kind === 'sale') { const b = store.bookings.find(x => x.id === m.id)!; return `<div class="scrim"><form class="dlg" id="salef" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">Registar atendimento</h2><p>Confirma o que foi cobrado. Não processa pagamentos.</p>
+    <div class="field"><label>Serviços (preço em €)</label>${b.serviceIds.map(id => { const sv = SERVICES.find(z => z.id === id)!; return `<div class="line"><span>${esc(sv.name)}</span><input type="number" min="0" step="0.5" data-sale="svc" data-id="${id}" value="${sv.price}" aria-label="Preço de ${esc(sv.name)}"></div>`; }).join('')}</div>
+    <div class="field"><label>Produtos vendidos (quantidade)</label>${PRODUCTS.map(pr => `<div class="line"><span>${esc(pr.name)} · ${eur(pr.price * 100)}</span><input type="number" min="0" max="9" step="1" data-sale="prod" data-id="${pr.id}" value="0" aria-label="Quantidade de ${esc(pr.name)}"></div>`).join('')}</div>
+    <div class="field"><label for="s-pay">Forma de pagamento</label><select id="s-pay">${PAYMENTS.map(x => `<option value="${x.id}">${x.name}</option>`).join('')}</select></div>
+    <div class="line"><b>Total</b><b id="sale-total">${eur(b.serviceIds.reduce((t, id) => t + SERVICES.find(z => z.id === id)!.price, 0) * 100)}</b></div>
+    <div class="acts"><button type="button" class="btn" data-act="m-no">Voltar</button><button class="btn primary" type="submit">Registar</button></div></form></div>`; }
   if (m.kind === 'delete') return shell('Apagar marcação', `<p>Esta marcação desaparece da agenda e do histórico. Não se pode desfazer.</p>`, `<button class="btn" data-act="m-no">Voltar</button><button class="btn danger solid" data-act="m-del">Apagar</button>`);
   if (m.kind === 'new') return `<div class="scrim"><form class="dlg" id="newf" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">Nova marcação</h2>
-    <div class="field"><label for="f-name">Cliente</label><input id="f-name" list="clients" required autocomplete="off" placeholder="Nome (escolhe um existente ou escreve um novo)" value="${esc(m.name)}"><datalist id="clients">${store.customers.map(c => `<option value="${esc(c.name)}"></option>`).join('')}</datalist></div>
+    <div class="field"><label for="f-name">Cliente</label><input id="f-name" list="clients" required autocomplete="off" placeholder="Nome (escolhe um existente ou escreve um novo)" value="${esc(m.name)}"><datalist id="clients">${store.customers.filter(c => c.phone).map(c => `<option value="${esc(c.name)}"></option>`).join('')}</datalist></div>
     <div class="two"><div class="field"><label for="f-phone">Telefone</label><input id="f-phone" inputmode="tel" value="${esc(m.phone)}"></div><div class="field"><label for="f-email">E-mail</label><input id="f-email" type="email" value="${esc(m.email)}"></div></div>
-    <div class="two"><div class="field"><label for="f-emp">Colaborador</label><select id="f-emp">${EMPLOYEES.map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="field"><label for="f-date">Dia</label><input id="f-date" type="date" value="${m.date}"></div></div>
+    <div class="two"><div class="field"><label for="f-emp">Colaborador</label><select id="f-emp">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="field"><label for="f-date">Dia</label><input id="f-date" type="date" value="${m.date}"></div></div>
     <div class="field"><label for="f-time">Hora</label><input id="f-time" type="time" step="600" value="${fmt(m.start)}"></div>
     <div class="field"><label>Serviços</label><div class="checks">${SERVICES.map(s => `<label><input type="checkbox" name="svc" value="${s.id}" ${m.svcs.includes(s.id) ? 'checked' : ''}>${s.name} · ${s.durationMin} min</label>`).join('')}</div></div>
     <div class="acts"><button type="button" class="btn" data-act="m-no">Cancelar</button><button class="btn primary" type="submit">Criar marcação</button></div></form></div>`;
-  if (m.kind === 'resched') return `<div class="scrim"><form class="dlg" id="rf" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">Mover marcação</h2><div class="two"><div class="field"><label for="r-date">Dia</label><input id="r-date" type="date" value="${m.date}"></div><div class="field"><label for="r-time">Hora</label><input id="r-time" type="time" step="600" value="${fmt(m.start)}"></div></div><div class="field"><label for="r-emp">Colaborador</label><select id="r-emp">${EMPLOYEES.map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="acts"><button type="button" class="btn" data-act="m-no">Voltar</button><button class="btn primary" type="submit">Mover</button></div></form></div>`;
+  if (m.kind === 'resched') return `<div class="scrim"><form class="dlg" id="rf" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">Mover marcação</h2><div class="two"><div class="field"><label for="r-date">Dia</label><input id="r-date" type="date" value="${m.date}"></div><div class="field"><label for="r-time">Hora</label><input id="r-time" type="time" step="600" value="${fmt(m.start)}"></div></div><div class="field"><label for="r-emp">Colaborador</label><select id="r-emp">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="acts"><button type="button" class="btn" data-act="m-no">Voltar</button><button class="btn primary" type="submit">Mover</button></div></form></div>`;
   return '';
 }
 const confText = (c: Conflict) => { const o = c.kind === 'overlap' ? store.bookings.find(b => b.id === c.with) : undefined; return c.kind === 'overlap' ? `outra marcação (${esc(store.customer(o!.customerId).name)}, ${fmt(o!.startMin)})` : c.kind === 'blocked' ? 'um período indisponível do colaborador' : c.kind === 'outside_hours' ? 'horas fora do horário de funcionamento' : c.kind === 'service_not_offered' ? 'um serviço que o colaborador não faz' : 'uma reserva temporária'; };
@@ -114,6 +123,7 @@ type Modal = null
   | { kind: 'conflict'; conflicts: Conflict[]; then: () => void; back: Modal }
   | { kind: 'notify'; title: string; then: (notify: boolean) => void }
   | { kind: 'delete' }
+  | { kind: 'sale'; id: string }
   | { kind: 'new'; name: string; phone: string; email: string; emp: string; date: DateStr; start: number; svcs: string[] }
   | { kind: 'resched'; id: string; emp: string; date: DateStr; start: number };
 let M: Modal = null;
@@ -121,18 +131,21 @@ let M: Modal = null;
 function toast(t: string) { S.toast = t; render(); setTimeout(() => { if (S.toast === t) { S.toast = ''; render(); } }, 3200); }
 
 function render() {
-  const view = S.view;
-  const emps = view === 'week' ? `<select class="btn" id="emp" aria-label="Colaborador">${EMPLOYEES.map(e => `<option value="${e.id}" ${e.id === S.emp ? 'selected' : ''}>${e.name} (${e.nick})</option>`).join('')}</select>` : '';
+  const view = S.view; const dash = view === 'dash';
+  const emps = view === 'week' && isAdmin() ? `<select class="btn" id="emp" aria-label="Colaborador">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === S.emp ? 'selected' : ''}>${e.name} (${e.nick})</option>`).join('')}</select>` : '';
   const label = view === 'week' ? `${dayLabel(monday(S.date), false)} – ${dayLabel(addDays(monday(S.date), 5), false)}` : dayLabel(S.date);
   const step = view === 'week' ? 7 : 1;
-  const main = view === 'list' ? listHtml() : `<div class="agenda" id="agenda">${agendaHtml()}</div>`;
+  const mine = store.notes.filter(n => isAdmin() || n.employeeId === S.role); const unread = mine.filter(n => !n.read).length;
+  const main = dash ? dashHtml(store, { who: isAdmin() ? S.dashWho : S.role, period: S.period }, isAdmin()) : view === 'list' ? listHtml() : `<div class="agenda" id="agenda">${agendaHtml()}</div>`;
   const keep = document.getElementById('agenda'); const st = keep ? [keep.scrollTop, keep.scrollLeft] : [0, 0];
   const dr = document.querySelector<HTMLElement>('.db'); const dst = dr ? dr.scrollTop : 0;
   $app.innerHTML = `<header class="top"><div class="brand">ROCK N' RAZOR<small>AGENDA · DEMONSTRAÇÃO</small></div>
-   <div class="seg" role="group" aria-label="Vista">${(['day', 'week', 'list'] as View[]).map(v => `<button data-view="${v}" aria-pressed="${view === v}">${{ day: 'Dia', week: 'Semana', list: 'Lista' }[v]}</button>`).join('')}</div>
-   <button class="btn" data-act="today">Hoje</button><button class="btn icon" data-step="${-step}" aria-label="Anterior">←</button><span class="date">${esc(label)}</span><button class="btn icon" data-step="${step}" aria-label="Seguinte">→</button>${emps}
-   <span class="spacer"></span>${view !== 'list' ? `<button class="btn icon" data-zoom="-2" aria-label="Menos zoom">−</button><button class="btn icon" data-zoom="2" aria-label="Mais zoom">+</button>` : ''}
-   <button class="btn" data-act="theme" id="themebtn">Tema</button><button class="btn primary" data-act="new">+ Nova marcação</button></header>
+   <div class="seg" role="group" aria-label="Vista">${(['day', 'week', 'list', 'dash'] as View[]).map(v => `<button data-view="${v}" aria-pressed="${view === v}">${{ day: 'Dia', week: 'Semana', list: 'Lista', dash: 'Dashboard' }[v]}</button>`).join('')}</div>
+   ${dash ? '' : `<button class="btn" data-act="today">Hoje</button><button class="btn icon" data-step="${-step}" aria-label="Anterior">←</button><span class="date">${esc(label)}</span><button class="btn icon" data-step="${step}" aria-label="Seguinte">→</button>${emps}`}
+   <span class="spacer"></span>${view === 'day' || view === 'week' ? `<button class="btn icon" data-zoom="-2" aria-label="Menos zoom">−</button><button class="btn icon" data-zoom="2" aria-label="Mais zoom">+</button>` : ''}
+   <label class="who">Entrar como <select class="btn" id="role">${[['admin', 'Admin da barbearia'], ...EMPLOYEES.map(e => [e.id, `${e.name} (${e.nick})`])].map(([v, l]) => `<option value="${v}" ${S.role === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+   <button class="btn" data-act="bell" aria-expanded="${S.bell}">Avisos${unread ? ` <b class="badge">${unread}</b>` : ''}</button>
+   <button class="btn" data-act="theme" id="themebtn">Tema</button>${dash ? '' : `<button class="btn primary" data-act="new">+ Nova marcação</button>`}${S.bell ? `<div class="bellp" role="region" aria-label="Avisos"><div class="dcrow"><b>Avisos (simulação do aviso no telemóvel)</b><button class="btn" data-act="bell-read">Marcar como lidos</button></div>${mine.length ? `<ul>${mine.slice(0, 12).map(n => `<li class="${n.read ? 'muted' : ''}">${new Date(n.at).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} · ${isAdmin() ? esc(EMPLOYEES.find(e => e.id === n.employeeId)!.name) + ': ' : ''}${esc(n.text)}</li>`).join('')}</ul>` : '<p class="muted">Sem avisos. Quando uma marcação for criada, mudada ou cancelada, o barbeiro recebe aqui o aviso.</p>'}</div>` : ''}</header>
    <div class="stage">${main}</div><div class="foot">Dados fictícios, guardados só neste ecrã. As regras vêm do motor real de marcações (@rr/domain). Nada é enviado a clientes.</div>${drawerHtml()}${modalHtml()}${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ''}`;
   const a = document.getElementById('agenda'); if (a) { a.scrollTop = st[0]; a.scrollLeft = st[1]; }
   const nd = document.querySelector<HTMLElement>('.db'); if (nd) nd.scrollTop = dst;
@@ -187,6 +200,11 @@ $app.addEventListener('click', e => {
   if (act === 'today') { S.date = store.today(); return render(); }
   if (act === 'theme') { const n = ({ system: 'light', light: 'dark', dark: 'system' } as const)[theme()]; try { localStorage.setItem('rr-theme', n); } catch {} applyTheme(n); return render(); }
   if (act === 'new') { M = { kind: 'new', name: '', phone: '', email: '', emp: S.emp, date: S.date, start: 600, svcs: ['corte'] }; return render(); }
+  if (act === 'bell') { S.bell = !S.bell; return render(); }
+  if (act === 'bell-read') { store.notes.filter(n => isAdmin() || n.employeeId === S.role).forEach(n => n.read = true); return render(); }
+  if (act === 'd-sale' && D) { M = { kind: 'sale', id: D.id }; return render(); }
+  const per = t.closest<HTMLElement>('[data-period]'); if (per) { S.period = per.dataset.period as Period; return render(); }
+  const wr = t.closest<HTMLElement>('tr[data-who]'); if (wr) { S.dashWho = wr.dataset.who!; return render(); }
   if (act === 'd-close') { D = null; return render(); }
   if (act === 'd-log') { S.showLog = !S.showLog; return render(); }
   if (act === 'd-t' && D) { D.start = Math.max(START, Math.min(END - 10, D.start + Number(val))); return render(); }
@@ -202,6 +220,12 @@ $app.addEventListener('click', e => {
   if ((act === 'm-notify' || act === 'm-silent') && M?.kind === 'notify') { const f = M.then; f(act === 'm-notify'); return; }
   const row = t.closest<HTMLElement>('tr[data-id]'); if (row) { openDraft(row.dataset.id!); return render(); }
 });
+function readSale(f: HTMLElement, id: string) {
+  const items: import('@rr/domain').SaleItem[] = [];
+  f.querySelectorAll<HTMLInputElement>('input[data-sale=svc]').forEach(i => { const sv = SERVICES.find(z => z.id === i.dataset.id)!; items.push({ kind: 'service', refId: sv.id, name: sv.name, qty: 1, unitCents: Math.round(Number(i.value || 0) * 100) }); });
+  f.querySelectorAll<HTMLInputElement>('input[data-sale=prod]').forEach(i => { const q = Math.max(0, Math.floor(Number(i.value || 0))); const pr = PRODUCTS.find(z => z.id === i.dataset.id)!; if (q) items.push({ kind: 'product', refId: pr.id, name: pr.name, qty: q, unitCents: pr.price * 100 }); });
+  return items;
+}
 // campos da ficha: atualizam o rascunho sem redesenhar (mantém o foco)
 const draftInput = (e: Event) => {
   const t = e.target as HTMLInputElement; const k = t.dataset.k; if (!D || !k) return;
@@ -209,12 +233,16 @@ const draftInput = (e: Event) => {
   else (D as any)[k === 'cnotes' ? 'cnotes' : k] = t.value;
   if (k === 'date' || k === 'time' || k === 'emp') render();
 };
-$app.addEventListener('input', e => { const k = (e.target as HTMLElement).dataset.k; if (k && k !== 'date' && k !== 'time' && k !== 'emp') draftInput(e); });
-$app.addEventListener('change', e => { const t = e.target as HTMLSelectElement; if (t.id === 'emp') { S.emp = t.value; return render(); } if (t.dataset.k) draftInput(e);
+$app.addEventListener('input', e => { const sf = (e.target as HTMLElement).closest<HTMLElement>('#salef'); if (sf) { document.getElementById('sale-total')!.textContent = eur(readSale(sf, '').reduce((t, i) => t + i.qty * i.unitCents, 0)); return; } const k = (e.target as HTMLElement).dataset.k; if (k && k !== 'date' && k !== 'time' && k !== 'emp') draftInput(e); });
+$app.addEventListener('change', e => { const t = e.target as HTMLSelectElement;
+  if (t.id === 'role') { S.role = t.value; D = null; M = null; S.sel = null; S.bell = false; if (!isAdmin()) { S.emp = S.role; S.dashWho = S.role; } return render(); }
+  if (t.id === 'dwho') { S.dashWho = t.value; return render(); }
+  if (t.id === 'emp') { S.emp = t.value; return render(); } if (t.dataset.k) draftInput(e);
   if (t.id === 'f-name' && M?.kind === 'new') { const c = store.customerByName(t.value); if (c) { (document.getElementById('f-phone') as HTMLInputElement).value = c.phone; (document.getElementById('f-email') as HTMLInputElement).value = c.email; } } });
 $app.addEventListener('submit', e => {
   e.preventDefault(); const f = e.target as HTMLFormElement; const v = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
   if (f.id === 'df') return saveDraft();
+  if (f.id === 'salef' && M?.kind === 'sale') { const id = M.id; const items = readSale(f, id); M = null; store.completeSale(id, items, (document.getElementById('s-pay') as HTMLSelectElement).value as any); return toast('Atendimento registado'); }
   if (f.id === 'newf') {
     const [h, m] = v('f-time').split(':').map(Number); const svcs = [...f.querySelectorAll<HTMLInputElement>('input[name=svc]:checked')].map(x => x.value);
     if (!svcs.length) return toast('Escolhe pelo menos um serviço');
@@ -248,5 +276,7 @@ $app.addEventListener('pointerdown', e => {
 });
 document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (M) { M = M.kind === 'conflict' ? M.back : null; render(); } else if (D) { D = null; render(); } });
 
+const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; document.body.appendChild(tip);
+document.addEventListener('pointermove', e => { const t = (e.target as Element).closest?.('[data-tip]') as HTMLElement | null; if (!t) { tip.hidden = true; return; } tip.textContent = t.getAttribute('data-tip')!; tip.hidden = false; tip.style.left = Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 14) + 'px'; });
 (window as any).__rr = { store, S };
 render();
