@@ -2,11 +2,14 @@ import { addDays, weekday, type Conflict, type DateStr } from '@rr/domain';
 import { Store, EMPLOYEES, SERVICES, STATUSES, COUNTRY_CODES, PRODUCTS, PAYMENTS, fmt, type B } from './store';
 import { dashHtml, eur, type Period } from './dash';
 import { mountBooking } from './booking';
+import { pushState, enablePush, disablePush, type PushState } from './push';
+/** Só existe na versão alojada (o servidor injeta o endereço da API). Na demonstração fica em branco e os avisos são simulados. */
+const API = (window as any).RR_API as string | undefined;
 
 const START = 540, END = 1140;
 const store = new Store();
 type View = 'day' | 'week' | 'list' | 'dash';
-const S = { role: 'admin' as string, dashWho: 'all' as string, period: '30' as Period, bell: false, view: 'day' as View, date: store.today(), emp: 'andre', zoom: 16, sel: null as string | null, toast: '', showLog: false };
+const S = { push: 'off' as PushState, role: 'admin' as string, dashWho: 'all' as string, period: '30' as Period, bell: false, view: 'day' as View, date: store.today(), emp: 'andre', zoom: 16, sel: null as string | null, toast: '', showLog: false };
 const $app = document.getElementById('app')!;
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
 const empName = (id: string) => { const e = EMPLOYEES.find(x => x.id === id)!; return `${e.name} (${e.nick})`; };
@@ -146,7 +149,7 @@ function render() {
    <span class="spacer"></span>${view === 'day' || view === 'week' ? `<button class="btn icon" data-zoom="-2" aria-label="Menos zoom">−</button><button class="btn icon" data-zoom="2" aria-label="Mais zoom">+</button>` : ''}
    <label class="who">Entrar como <select class="btn" id="role">${[['admin', 'Admin da barbearia'], ...EMPLOYEES.map(e => [e.id, `${e.name} (${e.nick})`])].map(([v, l]) => `<option value="${v}" ${S.role === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
    <button class="btn" data-act="bell" aria-expanded="${S.bell}">Avisos${unread ? ` <b class="badge">${unread}</b>` : ''}</button>
-   <a class="btn" href="#/reservar" id="to-client">Ver como cliente</a><button class="btn" data-act="theme" id="themebtn">Tema</button>${dash ? '' : `<button class="btn primary" data-act="new">+ Nova marcação</button>`}${S.bell ? `<div class="bellp" role="region" aria-label="Avisos"><div class="dcrow"><b>Avisos (simulação do aviso no telemóvel)</b><button class="btn" data-act="bell-read">Marcar como lidos</button></div>${mine.length ? `<ul>${mine.slice(0, 12).map(n => `<li class="${n.read ? 'muted' : ''}">${new Date(n.at).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} · ${isAdmin() ? esc(EMPLOYEES.find(e => e.id === n.employeeId)!.name) + ': ' : ''}${esc(n.text)}</li>`).join('')}</ul>` : '<p class="muted">Sem avisos. Quando uma marcação for criada, mudada ou cancelada, o barbeiro recebe aqui o aviso.</p>'}</div>` : ''}</header>
+   <a class="btn" href="#/reservar" id="to-client">Ver como cliente</a><button class="btn" data-act="theme" id="themebtn">Tema</button>${dash ? '' : `<button class="btn primary" data-act="new">+ Nova marcação</button>`}${S.bell ? `<div class="bellp" role="region" aria-label="Avisos"><div class="dcrow"><b>Avisos (simulação do aviso no telemóvel)</b><button class="btn" data-act="bell-read">Marcar como lidos</button></div>${pushBlock()}${mine.length ? `<ul>${mine.slice(0, 12).map(n => `<li class="${n.read ? 'muted' : ''}">${new Date(n.at).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} · ${isAdmin() ? esc(EMPLOYEES.find(e => e.id === n.employeeId)!.name) + ': ' : ''}${esc(n.text)}</li>`).join('')}</ul>` : '<p class="muted">Sem avisos. Quando uma marcação for criada, mudada ou cancelada, o barbeiro recebe aqui o aviso.</p>'}</div>` : ''}</header>
    <div class="stage">${main}</div><div class="foot">Dados fictícios, guardados só neste ecrã. As regras vêm do motor real de marcações (@rr/domain). Nada é enviado a clientes.</div>${drawerHtml()}${modalHtml()}${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ''}`;
   const a = document.getElementById('agenda'); if (a) { a.scrollTop = st[0]; a.scrollLeft = st[1]; }
   const nd = document.querySelector<HTMLElement>('.db'); if (nd) nd.scrollTop = dst;
@@ -154,6 +157,17 @@ function render() {
   const tb = document.getElementById('themebtn'); if (tb) tb.textContent = 'Tema: ' + ({ system: 'sistema', light: 'claro', dark: 'escuro' } as const)[theme()];
 }
 
+function pushBlock(): string {
+  if (API === undefined) return `<p class="muted pushnote">Na app instalada, cada barbeiro ativa aqui os avisos no telemóvel. Esta demonstração só mostra a simulação.</p>`;
+  const m: Record<PushState, string> = {
+    unsupported: '<p class="muted pushnote">Este navegador não suporta avisos no telemóvel.</p>',
+    'ios-install': '<p class="muted pushnote">No iPhone, instala primeiro a app: toca em Partilhar e depois em "Adicionar ao ecrã principal". Depois abre-a por lá e ativa os avisos.</p>',
+    denied: '<p class="muted pushnote">Os avisos estão bloqueados neste navegador. Ativa-os nas definições do site e volta aqui.</p>',
+    off: '<div class="pushnote"><button class="btn primary" data-act="push-on">Ativar avisos neste telemóvel</button></div>',
+    on: '<div class="pushnote"><span class="pill ok">Avisos ativos neste telemóvel</span> <button class="btn" data-act="push-off">Desativar</button></div>',
+  };
+  return m[S.push];
+}
 function theme(): 'system' | 'light' | 'dark' { try { const t = localStorage.getItem('rr-theme'); if (t === 'light' || t === 'dark') return t; } catch {} return 'system'; }
 function applyTheme(t: string) { const r = document.documentElement; t === 'system' ? r.removeAttribute('data-theme') : r.setAttribute('data-theme', t); }
 applyTheme(theme());
@@ -201,6 +215,7 @@ $app.addEventListener('click', e => {
   if (act === 'today') { S.date = store.today(); return render(); }
   if (act === 'theme') { const n = ({ system: 'light', light: 'dark', dark: 'system' } as const)[theme()]; try { localStorage.setItem('rr-theme', n); } catch {} applyTheme(n); return render(); }
   if (act === 'new') { M = { kind: 'new', name: '', phone: '', email: '', emp: S.emp, date: S.date, start: 600, svcs: ['corte'] }; return render(); }
+  if (act === 'push-on' || act === 'push-off') { const f = act === 'push-on' ? enablePush : disablePush; f(API ?? '').then(st => { S.push = st; render(); }).catch(() => toast('Não foi possível ativar os avisos. Confirma a ligação e tenta outra vez.')); return; }
   if (act === 'bell') { S.bell = !S.bell; return render(); }
   if (act === 'bell-read') { store.notes.filter(n => isAdmin() || n.employeeId === S.role).forEach(n => n.read = true); return render(); }
   if (act === 'd-sale' && D) { M = { kind: 'sale', id: D.id }; return render(); }
@@ -283,3 +298,6 @@ document.addEventListener('pointermove', e => { const t = (e.target as Element).
 const $book = document.getElementById('booking')!;
 function route() { const h = location.hash, client = h.startsWith('#/reservar') || h.startsWith('#/marcacao/'); $app.hidden = client; $book.hidden = !client; if (client) mountBooking($book, store, h); else render(); }
 window.addEventListener('hashchange', route); route();
+// versão instalável: regista o service worker (só quando a página traz o manifesto e está em http/https)
+if (document.querySelector('link[rel=manifest]') && 'serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+if (API !== undefined) pushState().then(st => { S.push = st; render(); });

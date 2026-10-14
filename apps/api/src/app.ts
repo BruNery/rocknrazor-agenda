@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { BookingService, type Notifier } from './service';
+import type { StaffNotifier } from './push';
 import { barberMetrics, shopMetrics, revenueByDay, periodBefore, weekday, addDays, type Sale } from '@rr/domain';
 import { hashPassword, verifyPassword, DUMMY_HASH, createSession, userFromToken, sha, cookieToken, sessionCookie, clearCookie, MAX_FAILURES, FAILURE_WINDOW_MIN, type User } from './auth';
 
@@ -9,10 +10,10 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const min = z.number().int().min(0).max(1440);
 const services = z.array(z.string().min(1)).min(1);
 
-export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean } = {}) {
+export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean; staff?: StaffNotifier; vapidPublicKey?: string } = {}) {
   const secure = !!opts.secureCookies;
   const app = Fastify();
-  const svc = new BookingService(pool, notifier);
+  const svc = new BookingService(pool, notifier, opts.staff);
   const status = (r: { ok: boolean; error?: string }) => (r.ok ? 200 : r.error === 'nao_encontrada' ? 404 : r.error === 'indisponivel' || r.error === 'conflito' || r.error === 'ja_cancelada' ? 409 : 422);
 
   app.setErrorHandler((err: any, _req, reply) => reply.code(err.name === 'ZodError' ? 400 : 500).send({ ok: false, error: err.name === 'ZodError' ? 'pedido_invalido' : 'erro_interno', detalhe: err.name === 'ZodError' ? err.issues : undefined }));
@@ -106,19 +107,33 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
       if (b.employeeId !== u.employeeId) return forbidden(reply);
       if (b.customerId != null) { const k = await pool.query('select 1 from bookings where customer_id = $1 and employee_id = $2 limit 1', [b.customerId, u.employeeId]); if (!k.rowCount) return forbidden(reply); } // só clientes que já atendeu
     }
-    const r = await svc.createHq({ ...b, actor: u.username, nowMs: clock() }); return reply.code(status(r)).send(r);
+    const r = await svc.createHq({ ...b, actor: u.username, actorEmployeeId: u.employeeId, nowMs: clock() }); return reply.code(status(r)).send(r);
   });
   app.post('/hq/bookings/:id/cancel', async (req, reply) => {
     const u = await need(req, reply); if (!u) return;
     const b = z.object({ notify: z.boolean() }).parse(req.body); const id = (req.params as any).id;
     if (!(await owns(u, id))) return notFound(reply);
-    const r = await svc.cancel({ bookingId: id, by: 'staff', actor: u.username, notify: b.notify, nowMs: clock() }); return reply.code(status(r)).send(r);
+    const r = await svc.cancel({ bookingId: id, by: 'staff', actor: u.username, actorEmployeeId: u.employeeId, notify: b.notify, nowMs: clock() }); return reply.code(status(r)).send(r);
   });
   app.post('/hq/bookings/:id/reschedule', async (req, reply) => {
     const u = await need(req, reply); if (!u) return;
     const b = z.object({ date, startMin: min, notify: z.boolean(), confirmConflicts: z.boolean().optional() }).parse(req.body); const id = (req.params as any).id;
     if (!(await owns(u, id))) return notFound(reply);
-    const r = await svc.reschedule({ bookingId: id, by: 'staff', actor: u.username, ...b, nowMs: clock() }); return reply.code(status(r)).send(r);
+    const r = await svc.reschedule({ bookingId: id, by: 'staff', actor: u.username, actorEmployeeId: u.employeeId, ...b, nowMs: clock() }); return reply.code(status(r)).send(r);
+  });
+
+  // ---------- Avisos no telemóvel (Web Push) ----------
+  app.get('/push/key', async (_req, reply) => (opts.vapidPublicKey ? { ok: true, key: opts.vapidPublicKey } : reply.code(503).send({ ok: false, error: 'push_nao_configurado' })));
+  app.post('/push/subscribe', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ endpoint: z.string().url().max(1000).refine(x => x.startsWith('https://')), keys: z.object({ p256dh: z.string().min(10).max(200), auth: z.string().min(10).max(100) }) }).parse(req.body);
+    // o mesmo dispositivo passa para o utilizador que está com sessão (ex.: telemóvel partilhado)
+    await pool.query('insert into push_subscriptions(user_id, endpoint, p256dh, auth) values ($1,$2,$3,$4) on conflict (endpoint) do update set user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth', [u.id, b.endpoint, b.keys.p256dh, b.keys.auth]);
+    return { ok: true };
+  });
+  app.post('/push/unsubscribe', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return; const b = z.object({ endpoint: z.string() }).parse(req.body);
+    await pool.query('delete from push_subscriptions where endpoint = $1 and user_id = $2', [b.endpoint, u.id]); return { ok: true };
   });
 
   // Atendimento (venda) registado na app. Não processa pagamentos.
