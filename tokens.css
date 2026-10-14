@@ -1,0 +1,50 @@
+/* Tokens visuais da app de marcações — identidade Rock n' Razor
+   Preto quente + dourado + branco do logótipo. Claro e escuro. */
+:root {
+  --font-sans: "Inter", -apple-system, "system-ui", "Segoe UI", Roboto, sans-serif;
+  --font-display: "Rye", "Playfair Display", Georgia, serif; /* só para marca/títulos grandes */
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
+  --fs-xs: 12px; --fs-sm: 14px; --fs-md: 16px; --fs-lg: 22px;
+
+  /* marca (constantes) */
+  --brand-black: #0A0605;
+  --brand-gold: #D7B86D;
+  --brand-white: #F4EFE6;
+}
+
+/* Modo claro */
+:root, :root[data-theme="light"] {
+  --bg: #FBF8F2;            /* fundo da página */
+  --surface: #FFFFFF;       /* cartões, agenda */
+  --surface-2: #F1ECE2;     /* botões secundários, cabeçalhos */
+  --border: #E4DDCF;
+  --text: #1A1411;          /* 17,2:1 sobre --bg */
+  --text-muted: #6B645A;    /* 5,5:1 */
+  --accent: #C9A24D;        /* preenchimento do botão primário */
+  --on-accent: #0A0605;     /* 8,4:1 */
+  --accent-text: #7A5C14;   /* dourado escuro para texto/ligações: 5,9:1 */
+  --focus: #7A5C14;
+  --block-blocked: #D9D3C7; /* indisponibilidade */
+  --danger: #B3261E; --success: #2E7D4F; --warning: #B26A00;
+}
+
+/* Modo escuro (padrão do sistema, ou forçado) */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg:#0A0605; --surface:#14100E; --surface-2:#1C1714; --border:#2E2620; --text:#F4EFE6; --text-muted:#B5B0A6; --accent:#D7B86D; --on-accent:#0A0605; --accent-text:#D7B86D; --focus:#D7B86D; --block-blocked:#2A2420; --danger:#F2867F; --success:#6CC28C; --warning:#E3A94B; }
+}
+:root[data-theme="dark"] {
+  --bg:#0A0605; --surface:#14100E; --surface-2:#1C1714; --border:#2E2620;
+  --text:#F4EFE6;           /* 17,6:1 */
+  --text-muted:#B5B0A6;     /* 8,8:1 */
+  --accent:#D7B86D;         /* 10,5:1 sobre --bg */
+  --on-accent:#0A0605;
+  --accent-text:#D7B86D;
+  --focus:#D7B86D;
+  --block-blocked:#2A2420;
+  --danger:#F2867F; --success:#6CC28C; --warning:#E3A94B;
+}
+
+/* Cores de marcação por serviço: paleta própria, legível nos dois modos */
+:root {
+  --svc-1:#8C5A2B; --svc-2:#6B7A3E; --svc-3:#3F6B7A; --svc-4:#7A3F5E; --svc-5:#5B4B8A; --svc-6:#8A3F3F;
+}
