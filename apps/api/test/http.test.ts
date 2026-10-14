@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import { localToEpochMs } from '@rr/domain';
 import { buildApp } from '../src/app';
 import { FakeNotifier } from '../src/service';
+import { hashPassword } from '../src/auth';
 import { freshDb } from './helpers';
 
 const D = '2026-10-14'; const NOW = localToEpochMs(D, 8 * 60);
@@ -26,12 +27,14 @@ describe('API HTTP', () => {
     expect(r.statusCode).toBe(422);
   });
   it('HQ: conflito devolve 409 com a lista; confirmar cria; cancelar sem notificar', async () => {
-    const mk = (extra = {}) => app.inject({ method: 'POST', url: '/hq/bookings', headers: { 'x-dev-user': 'bruno' }, payload: { employeeId: 'a', date: D, startMin: 600, endMin: 640, serviceIds: ['corte'], notify: false, ...extra } });
+    await pool.query("insert into users(username, password_hash, role) values ('bruno', $1, 'admin')", [await hashPassword('palavra-passe-longa')]);
+    const cookie = ((await app.inject({ method: 'POST', url: '/auth/login', payload: { username: 'bruno', password: 'palavra-passe-longa' } })).headers['set-cookie'] as string).split(';')[0];
+    const mk = (extra = {}) => app.inject({ method: 'POST', url: '/hq/bookings', headers: { cookie }, payload: { employeeId: 'a', date: D, startMin: 600, endMin: 640, serviceIds: ['corte'], notify: false, ...extra } });
     const first = await mk(); expect(first.statusCode).toBe(200);
     const clash = await mk({ startMin: 620, endMin: 660 }); expect(clash.statusCode).toBe(409); expect(clash.json().conflicts[0].kind).toBe('overlap');
     const ok = await mk({ startMin: 620, endMin: 660, confirmConflicts: true }); expect(ok.statusCode).toBe(200);
-    const cancel = await app.inject({ method: 'POST', url: `/hq/bookings/${first.json().bookingId}/cancel`, payload: { notify: false } });
+    const cancel = await app.inject({ method: 'POST', url: `/hq/bookings/${first.json().bookingId}/cancel`, headers: { cookie }, payload: { notify: false } });
     expect(cancel.statusCode).toBe(200);
-    expect((await app.inject({ method: 'POST', url: '/hq/bookings/inexistente/cancel', payload: { notify: false } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/hq/bookings/inexistente/cancel', headers: { cookie }, payload: { notify: false } })).statusCode).toBe(404);
   });
 });

@@ -2,12 +2,15 @@ import Fastify from 'fastify';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { BookingService, type Notifier } from './service';
+import { barberMetrics, shopMetrics, revenueByDay, periodBefore, weekday, addDays, type Sale } from '@rr/domain';
+import { hashPassword, verifyPassword, DUMMY_HASH, createSession, userFromToken, sha, cookieToken, sessionCookie, clearCookie, MAX_FAILURES, FAILURE_WINDOW_MIN, type User } from './auth';
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const min = z.number().int().min(0).max(1440);
 const services = z.array(z.string().min(1)).min(1);
 
-export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now) {
+export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean } = {}) {
+  const secure = !!opts.secureCookies;
   const app = Fastify();
   const svc = new BookingService(pool, notifier);
   const status = (r: { ok: boolean; error?: string }) => (r.ok ? 200 : r.error === 'nao_encontrada' ? 404 : r.error === 'indisponivel' || r.error === 'conflito' || r.error === 'ja_cancelada' ? 409 : 422);
@@ -35,19 +38,125 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
     const r = await svc.reschedule({ bookingId: (req.params as any).id, by: 'customer', actor: 'cliente', ...b, notify: true, nowMs: clock() }); return reply.code(status(r)).send(r);
   });
 
-  // HQ (autenticação ainda por implementar no marco 3: actor vem de um cabeçalho de desenvolvimento)
-  const actor = (req: any) => String(req.headers['x-dev-user'] ?? 'dev');
+  // ---------- Autenticação ----------
+  app.post('/auth/login', async (req, reply) => {
+    const b = z.object({ username: z.string().min(1).max(60), password: z.string().min(1).max(200) }).parse(req.body);
+    const username = b.username.trim().toLowerCase();
+    const fails = await pool.query("select count(*)::int n from login_failures where username = $1 and at > now() - make_interval(mins => $2)", [username, FAILURE_WINDOW_MIN]);
+    if (fails.rows[0].n >= MAX_FAILURES) return reply.code(429).send({ ok: false, error: 'demasiadas_tentativas' });
+    const r = await pool.query('select id, password_hash, role, employee_id, active from users where username = $1', [username]);
+    const u = r.rows[0]; const good = await verifyPassword(b.password, u?.password_hash ?? DUMMY_HASH);
+    if (!u || !u.active || !good) { await pool.query('insert into login_failures(username) values ($1)', [username]); return reply.code(401).send({ ok: false, error: 'credenciais_invalidas' }); }
+    await pool.query('delete from login_failures where username = $1', [username]);
+    const token = await createSession(pool, Number(u.id));
+    return reply.header('set-cookie', sessionCookie(token, secure)).send({ ok: true, user: { username, role: u.role, employeeId: u.employee_id } });
+  });
+  app.post('/auth/logout', async (req, reply) => {
+    const t = cookieToken(req.headers.cookie); if (t) await pool.query('delete from sessions where token_hash = $1', [sha(t)]);
+    return reply.header('set-cookie', clearCookie(secure)).send({ ok: true });
+  });
+  const me = (req: any): Promise<User | null> => userFromToken(pool, cookieToken(req.headers.cookie));
+  /** Devolve o utilizador ou responde 401. */
+  const need = async (req: any, reply: any): Promise<User | null> => { const u = await me(req); if (!u) { reply.code(401).send({ ok: false, error: 'sem_sessao' }); return null; } return u; };
+  const needAdmin = async (req: any, reply: any): Promise<User | null> => { const u = await need(req, reply); if (!u) return null; if (u.role !== 'admin') { reply.code(403).send({ ok: false, error: 'sem_permissao' }); return null; } return u; };
+  app.get('/auth/me', async (req, reply) => { const u = await need(req, reply); if (u) return { ok: true, user: { username: u.username, role: u.role, employeeId: u.employeeId } }; });
+
+  // Contas (só o administrador cria barbeiros e repõe palavras-passe)
+  app.post('/admin/users', async (req, reply) => {
+    if (!(await needAdmin(req, reply))) return;
+    const b = z.object({ username: z.string().min(3).max(40).regex(/^[a-z0-9._-]+$/), password: z.string().min(10).max(200), role: z.enum(['admin', 'barber']), employeeId: z.string().optional() }).parse(req.body);
+    if (b.role === 'barber' && !b.employeeId) return reply.code(422).send({ ok: false, error: 'barbeiro_precisa_de_colaborador' });
+    try { const r = await pool.query('insert into users(username, password_hash, role, employee_id) values ($1,$2,$3,$4) returning id', [b.username, await hashPassword(b.password), b.role, b.role === 'barber' ? b.employeeId : null]); return { ok: true, id: Number(r.rows[0].id) }; }
+    catch (e: any) { if (e.code === '23505') return reply.code(409).send({ ok: false, error: 'utilizador_ja_existe' }); if (e.code === '23503') return reply.code(422).send({ ok: false, error: 'colaborador_desconhecido' }); throw e; }
+  });
+  app.post('/admin/users/:id/password', async (req, reply) => {
+    if (!(await needAdmin(req, reply))) return;
+    const b = z.object({ password: z.string().min(10).max(200) }).parse(req.body); const id = Number((req.params as any).id);
+    const r = await pool.query('update users set password_hash = $2 where id = $1', [id, await hashPassword(b.password)]);
+    if (!r.rowCount) return reply.code(404).send({ ok: false, error: 'nao_encontrado' });
+    await pool.query('delete from sessions where user_id = $1', [id]); // fecha as sessões abertas
+    return { ok: true };
+  });
+  app.post('/admin/users/:id/deactivate', async (req, reply) => {
+    if (!(await needAdmin(req, reply))) return;
+    const id = Number((req.params as any).id); const r = await pool.query('update users set active = false where id = $1', [id]);
+    if (!r.rowCount) return reply.code(404).send({ ok: false, error: 'nao_encontrado' });
+    await pool.query('delete from sessions where user_id = $1', [id]); return { ok: true };
+  });
+
+  // ---------- HQ (protegido) ----------
+  /** Barbeiro só mexe no que é seu; o admin em tudo. Marcação de outro barbeiro responde 404 (não revela que existe). */
+  const owns = async (u: User, bookingId: string) => { if (u.role === 'admin') return true; const r = await pool.query('select 1 from bookings where id = $1 and employee_id = $2', [bookingId, u.employeeId]); return r.rowCount! > 0; };
+  const forbidden = (reply: any) => reply.code(403).send({ ok: false, error: 'sem_permissao' });
+  const notFound = (reply: any) => reply.code(404).send({ ok: false, error: 'nao_encontrada' });
+
+  app.get('/hq/bookings', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const q = z.object({ date, employeeId: z.string().optional() }).parse(req.query);
+    if (u.role === 'barber' && q.employeeId && q.employeeId !== u.employeeId) return forbidden(reply);
+    const emp = u.role === 'barber' ? u.employeeId : q.employeeId ?? null;
+    const r = await pool.query(`select b.id, b.employee_id, to_char(b.date,'YYYY-MM-DD') date, b.start_min, b.end_min, b.service_ids, b.source, b.status, c.name customer_name, c.phone customer_phone, c.email customer_email
+      from bookings b left join customers c on c.id = b.customer_id where b.date = $1 and ($2::text is null or b.employee_id = $2) order by b.start_min`, [q.date, emp]);
+    return { ok: true, bookings: r.rows.map(x => ({ id: x.id, employeeId: x.employee_id, date: x.date, startMin: x.start_min, endMin: x.end_min, serviceIds: x.service_ids, source: x.source, status: x.status, customer: x.customer_name ? { name: x.customer_name, phone: x.customer_phone, email: x.customer_email } : null })) };
+  });
   app.post('/hq/bookings', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
     const b = z.object({ customerId: z.number().int().optional(), employeeId: z.string(), date, startMin: min, endMin: min, serviceIds: services, confirmConflicts: z.boolean().optional(), notify: z.boolean() }).parse(req.body);
-    const r = await svc.createHq({ ...b, actor: actor(req), nowMs: clock() }); return reply.code(status(r)).send(r);
+    if (u.role === 'barber') {
+      if (b.employeeId !== u.employeeId) return forbidden(reply);
+      if (b.customerId != null) { const k = await pool.query('select 1 from bookings where customer_id = $1 and employee_id = $2 limit 1', [b.customerId, u.employeeId]); if (!k.rowCount) return forbidden(reply); } // só clientes que já atendeu
+    }
+    const r = await svc.createHq({ ...b, actor: u.username, nowMs: clock() }); return reply.code(status(r)).send(r);
   });
   app.post('/hq/bookings/:id/cancel', async (req, reply) => {
-    const b = z.object({ notify: z.boolean() }).parse(req.body);
-    const r = await svc.cancel({ bookingId: (req.params as any).id, by: 'staff', actor: actor(req), notify: b.notify, nowMs: clock() }); return reply.code(status(r)).send(r);
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ notify: z.boolean() }).parse(req.body); const id = (req.params as any).id;
+    if (!(await owns(u, id))) return notFound(reply);
+    const r = await svc.cancel({ bookingId: id, by: 'staff', actor: u.username, notify: b.notify, nowMs: clock() }); return reply.code(status(r)).send(r);
   });
   app.post('/hq/bookings/:id/reschedule', async (req, reply) => {
-    const b = z.object({ date, startMin: min, notify: z.boolean(), confirmConflicts: z.boolean().optional() }).parse(req.body);
-    const r = await svc.reschedule({ bookingId: (req.params as any).id, by: 'staff', actor: actor(req), ...b, nowMs: clock() }); return reply.code(status(r)).send(r);
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ date, startMin: min, notify: z.boolean(), confirmConflicts: z.boolean().optional() }).parse(req.body); const id = (req.params as any).id;
+    if (!(await owns(u, id))) return notFound(reply);
+    const r = await svc.reschedule({ bookingId: id, by: 'staff', actor: u.username, ...b, nowMs: clock() }); return reply.code(status(r)).send(r);
+  });
+
+  // Atendimento (venda) registado na app. Não processa pagamentos.
+  app.post('/hq/bookings/:id/sale', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ payment: z.enum(['dinheiro', 'cartao', 'mbway', 'outro']), items: z.array(z.object({ kind: z.enum(['service', 'product']), refId: z.string().min(1).max(60), name: z.string().min(1).max(120), qty: z.number().int().min(1).max(99), unitCents: z.number().int().min(0).max(1_000_000) })).min(1).max(20) }).parse(req.body);
+    const id = (req.params as any).id; if (!(await owns(u, id))) return notFound(reply);
+    const c = await pool.connect();
+    try {
+      await c.query('begin');
+      const bk = (await c.query("select employee_id, customer_id, to_char(date,'YYYY-MM-DD') d, status from bookings where id = $1 for update", [id])).rows[0];
+      if (!bk || bk.status !== 'confirmed') { await c.query('rollback'); return reply.code(422).send({ ok: false, error: 'marcacao_nao_confirmada' }); }
+      if ((await c.query('select 1 from sales where booking_id = $1', [id])).rowCount) { await c.query('rollback'); return reply.code(409).send({ ok: false, error: 'ja_registado' }); }
+      const s = await c.query('insert into sales(booking_id, employee_id, customer_id, date, payment, created_by) values ($1,$2,$3,$4,$5,$6) returning id', [id, bk.employee_id, bk.customer_id, bk.d, b.payment, u.id]);
+      for (const i of b.items) await c.query('insert into sale_items(sale_id, kind, ref_id, name, qty, unit_cents) values ($1,$2,$3,$4,$5,$6)', [s.rows[0].id, i.kind, i.refId, i.name, i.qty, i.unitCents]);
+      await c.query('commit'); return { ok: true, saleId: Number(s.rows[0].id) };
+    } catch (e) { await c.query('rollback'); throw e; } finally { c.release(); }
+  });
+
+  // Dashboards: só números agregados, nunca nomes nem dados de clientes.
+  app.get('/hq/dashboard', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const q = z.object({ from: date, to: date, employeeId: z.string().optional() }).parse(req.query);
+    if (q.from > q.to) return reply.code(400).send({ ok: false, error: 'pedido_invalido' });
+    if (u.role === 'barber' && q.employeeId && q.employeeId !== u.employeeId) return forbidden(reply);
+    const who = u.role === 'barber' ? u.employeeId! : q.employeeId; // undefined = loja toda (admin)
+    const prev = periodBefore(q.from, q.to); const from = prev.from, to = q.to;
+    const bk = await pool.query("select id, employee_id, to_char(date,'YYYY-MM-DD') d, start_min, end_min, status from bookings where date between $1 and $2", [from, to]);
+    const sl = await pool.query(`select s.id, s.booking_id, s.employee_id, coalesce(s.customer_id::text, 'b:' || s.booking_id) customer_id, to_char(s.date,'YYYY-MM-DD') d, s.payment,
+        coalesce(json_agg(json_build_object('kind', i.kind, 'refId', i.ref_id, 'name', i.name, 'qty', i.qty, 'unitCents', i.unit_cents)) filter (where i.id is not null), '[]') items
+      from sales s left join sale_items i on i.sale_id = s.id where s.date <= $1 group by s.id`, [to]);
+    const oh = await pool.query('select weekday, open_min, close_min from opening_hours');
+    const emps = (await pool.query('select id from employees order by id')).rows.map(r => r.id as string);
+    const bookings = bk.rows.map(r => ({ id: r.id, employeeId: r.employee_id, date: r.d, startMin: r.start_min, endMin: r.end_min, status: r.status }));
+    const sales: Sale[] = sl.rows.map(r => ({ id: String(r.id), bookingId: r.booking_id, employeeId: r.employee_id, customerId: String(r.customer_id), date: r.d, items: r.items, payment: r.payment }));
+    const mins = (a: string, b: string) => { let t = 0; for (let d = a; d <= b; d = addDays(d, 1)) for (const h of oh.rows.filter(h => h.weekday === weekday(d))) t += h.close_min - h.open_min; return t; }; // PRESSUPOSTO: sem descontar bloqueios
+    const mk = (a: string, b: string) => { const base = { from: a, to: b, bookings, sales, availableMinutes: mins(a, b) }; return who ? { total: barberMetrics({ ...base, employeeId: who }) } : shopMetrics(base, emps); };
+    return { ok: true, scope: who ?? 'loja', period: { from: q.from, to: q.to }, current: mk(q.from, q.to), previous: mk(prev.from, prev.to), revenueByDay: revenueByDay(sales, who ? [who] : null, q.from, q.to) };
   });
   return app;
 }
