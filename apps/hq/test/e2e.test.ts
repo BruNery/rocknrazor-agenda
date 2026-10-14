@@ -42,24 +42,73 @@ describe('HQ: agenda', () => {
     await page.waitForSelector('.toast', { state: 'attached' });
     expect(await page.locator('.blk', { hasText: 'SOBRE' }).count()).toBe(1);
   });
-  it('arrastar para outro colaborador e outra hora pergunta se notifica e regista no histórico', async () => {
+  it('arrastar para outro colaborador e outra hora pergunta se notifica', async () => {
     const blk = page.locator('.blk', { hasText: 'Rui (exemplo)' }); const b = (await blk.boundingBox())!; const to = await colBox(3);
     await page.mouse.move(b.x + 20, b.y + 10); await page.mouse.down(); await page.mouse.move(to.x + 40, b.y + 10 + 16 * 6, { steps: 8 }); await page.mouse.up();
     await page.waitForSelector('text=Mover marcação');
     await page.click('[data-act=m-silent]');
-    await page.waitForSelector('.panel .log li >> text=não notificado');
-    expect(await page.locator('.panel dd', { hasText: 'Emanuel' }).count()).toBe(1);
+    await page.waitForSelector('.toast');
+    expect(await page.locator('.col').nth(3).locator('.blk', { hasText: 'Rui' }).count()).toBe(1);
   });
-  it('cancelar pergunta sempre se notifica', async () => {
-    await page.locator('.blk', { hasText: 'Gonçalo' }).click();
-    await page.click('[data-act=cancel]');
-    await page.waitForSelector('text=Queres notificar o cliente');
-    await page.click('[data-act=m-notify]');
-    await page.waitForSelector('.panel .pill.bad');
+});
+
+describe('HQ: ficha da marcação (cliente e dados editáveis)', () => {
+  const open = async (who: string) => { await page.locator('.blk', { hasText: who }).first().click(); await page.waitForSelector('#df'); };
+  it('abre com os dados do cliente, serviço, colaborador e visitas anteriores', async () => {
+    await open('Gonçalo');
+    expect(await page.inputValue('#d-name')).toBe('Gonçalo (exemplo)');
+    expect(await page.inputValue('#d-phone')).toBe('913 357 837');
+    expect(await page.inputValue('#d-email')).toBe('goncalo@exemplo.pt');
+    expect(await page.inputValue('#d-cc')).toBe('+351');
+    expect(await page.locator('.visit').count()).toBe(2);
   });
+  it('edita nome, telefone, e-mail e notas do cliente e guarda (valem para todas as marcações dele)', async () => {
+    await page.fill('#d-name', 'Gonçalo Silva'); await page.selectOption('#d-cc', '+55'); await page.fill('#d-phone', '11 98888 7777');
+    await page.fill('#d-email', 'g.silva@exemplo.pt'); await page.fill('#d-cnotes', 'Alérgico a lâminas novas');
+    await page.fill('#d-notes', 'Chega 5 min mais cedo');
+    await page.click('#df button[type=submit]'); await page.waitForSelector('text=Marcação guardada');
+    expect(await page.locator('#df').count()).toBe(0); // sem mudar hora não pergunta notificação
+    await open('Gonçalo Silva');
+    expect(await page.inputValue('#d-cc')).toBe('+55'); expect(await page.inputValue('#d-phone')).toBe('11 98888 7777');
+    expect(await page.inputValue('#d-cnotes')).toBe('Alérgico a lâminas novas'); expect(await page.inputValue('#d-notes')).toBe('Chega 5 min mais cedo');
+    const nome = await page.evaluate(() => (window as any).__rr.store.bookings.filter((b: any) => b.customerId === (window as any).__rr.store.customers[0].id).length);
+    expect(nome).toBe(3); // as 3 marcações do cliente apontam para o mesmo registo
+    await page.click('[data-act=d-log]'); expect(await page.locator('.log li', { hasText: 'Dados do cliente alterados' }).count()).toBe(1);
+  });
+  it('acrescenta um serviço, muda a hora com + e guarda: recalcula a duração e pergunta se notifica', async () => {
+    await page.click('[data-act=d-add]'); await page.click('[data-act=d-addsvc][data-v=barba]');
+    expect(await page.locator('#df', { hasText: 'Total: 60 minutos' }).count()).toBe(1);
+    await page.click('[data-act=d-t][data-v="10"]'); expect(await page.inputValue('#d-time')).toBe('14:10');
+    await page.click('#df button[type=submit]'); await page.waitForSelector('text=Queres notificar o cliente');
+    await page.click('[data-act=m-silent]'); await page.waitForSelector('text=Marcação guardada');
+    await open('Gonçalo Silva'); expect(await page.locator('#df', { hasText: 'termina às 15:10' }).count()).toBe(1);
+    await page.click('[data-act=d-log]'); expect(await page.locator('.log li', { hasText: 'não notificado' }).count()).toBe(1);
+  });
+  it('mudar para um horário ocupado mostra o conflito e voltar mantém a ficha aberta', async () => {
+    await page.selectOption('#d-emp', 'andre'); await page.fill('#d-time', '13:10'); // almoço do André (a ficha continua aberta do teste anterior)
+    await page.click('#df button[type=submit]'); await page.waitForSelector('text=período indisponível');
+    await page.click('[data-act=m-no]'); expect(await page.locator('#df').count()).toBe(1);
+    await page.click('[data-act=d-close]');
+  });
+  it('Copiar abre nova marcação com o cliente e serviços; Estado "Cancelada" pergunta notificação', async () => {
+    await open('Gonçalo Silva'); await page.click('[data-act=d-copy]'); await page.waitForSelector('#newf');
+    expect(await page.inputValue('#f-name')).toBe('Gonçalo Silva'); await page.click('[data-act=m-no]');
+    await open('Gonçalo Silva'); await page.selectOption('#d-status', 'cancelled'); await page.click('#df button[type=submit]');
+    await page.waitForSelector('text=Cancelar marcação'); await page.click('[data-act=m-notify]'); await page.waitForSelector('text=Marcação guardada');
+    expect(await page.locator('.blk', { hasText: 'Gonçalo Silva' }).count()).toBe(0);
+  });
+  it('Apagar pede confirmação e remove a marcação', async () => {
+    await open('Tiago'); await page.click('[data-act=d-del]'); await page.waitForSelector('text=Não se pode desfazer');
+    await page.click('[data-act=m-del]'); await page.waitForSelector('text=Marcação apagada');
+    expect(await page.locator('.blk', { hasText: 'Tiago' }).count()).toBe(0);
+  });
+});
+
+describe('HQ: vistas e tema', () => {
   it('vista semana, lista e domingo fechado', async () => {
     await page.click('[data-view=week]'); expect(await page.locator('.col').count()).toBe(6);
     await page.click('[data-view=list]'); expect(await page.locator('.list tbody tr').count()).toBeGreaterThan(3);
+    await page.locator('.list tbody tr').first().click(); await page.waitForSelector('#df'); await page.click('[data-act=d-close]');
     await page.click('[data-view=day]'); await page.click('[data-step="1"]'); await page.click('[data-step="1"]'); await page.click('[data-step="1"]'); await page.click('[data-step="1"]'); // quarta+4 = domingo
     expect(await page.locator('.col.closed').count()).toBe(4);
   });
