@@ -1,6 +1,7 @@
 import { addDays, weekday, type Conflict, type DateStr } from '@rr/domain';
 import { Store, EMPLOYEES, SERVICES, STATUSES, COUNTRY_CODES, PRODUCTS, PAYMENTS, fmt, type B } from './store';
 import { dashHtml, eur, type Period } from './dash';
+import { mountBooking } from './booking';
 
 const START = 540, END = 1140;
 const store = new Store();
@@ -145,7 +146,7 @@ function render() {
    <span class="spacer"></span>${view === 'day' || view === 'week' ? `<button class="btn icon" data-zoom="-2" aria-label="Menos zoom">−</button><button class="btn icon" data-zoom="2" aria-label="Mais zoom">+</button>` : ''}
    <label class="who">Entrar como <select class="btn" id="role">${[['admin', 'Admin da barbearia'], ...EMPLOYEES.map(e => [e.id, `${e.name} (${e.nick})`])].map(([v, l]) => `<option value="${v}" ${S.role === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
    <button class="btn" data-act="bell" aria-expanded="${S.bell}">Avisos${unread ? ` <b class="badge">${unread}</b>` : ''}</button>
-   <button class="btn" data-act="theme" id="themebtn">Tema</button>${dash ? '' : `<button class="btn primary" data-act="new">+ Nova marcação</button>`}${S.bell ? `<div class="bellp" role="region" aria-label="Avisos"><div class="dcrow"><b>Avisos (simulação do aviso no telemóvel)</b><button class="btn" data-act="bell-read">Marcar como lidos</button></div>${mine.length ? `<ul>${mine.slice(0, 12).map(n => `<li class="${n.read ? 'muted' : ''}">${new Date(n.at).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} · ${isAdmin() ? esc(EMPLOYEES.find(e => e.id === n.employeeId)!.name) + ': ' : ''}${esc(n.text)}</li>`).join('')}</ul>` : '<p class="muted">Sem avisos. Quando uma marcação for criada, mudada ou cancelada, o barbeiro recebe aqui o aviso.</p>'}</div>` : ''}</header>
+   <a class="btn" href="#/reservar" id="to-client">Ver como cliente</a><button class="btn" data-act="theme" id="themebtn">Tema</button>${dash ? '' : `<button class="btn primary" data-act="new">+ Nova marcação</button>`}${S.bell ? `<div class="bellp" role="region" aria-label="Avisos"><div class="dcrow"><b>Avisos (simulação do aviso no telemóvel)</b><button class="btn" data-act="bell-read">Marcar como lidos</button></div>${mine.length ? `<ul>${mine.slice(0, 12).map(n => `<li class="${n.read ? 'muted' : ''}">${new Date(n.at).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })} · ${isAdmin() ? esc(EMPLOYEES.find(e => e.id === n.employeeId)!.name) + ': ' : ''}${esc(n.text)}</li>`).join('')}</ul>` : '<p class="muted">Sem avisos. Quando uma marcação for criada, mudada ou cancelada, o barbeiro recebe aqui o aviso.</p>'}</div>` : ''}</header>
    <div class="stage">${main}</div><div class="foot">Dados fictícios, guardados só neste ecrã. As regras vêm do motor real de marcações (@rr/domain). Nada é enviado a clientes.</div>${drawerHtml()}${modalHtml()}${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ''}`;
   const a = document.getElementById('agenda'); if (a) { a.scrollTop = st[0]; a.scrollLeft = st[1]; }
   const nd = document.querySelector<HTMLElement>('.db'); if (nd) nd.scrollTop = dst;
@@ -279,4 +280,6 @@ document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (
 const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; document.body.appendChild(tip);
 document.addEventListener('pointermove', e => { const t = (e.target as Element).closest?.('[data-tip]') as HTMLElement | null; if (!t) { tip.hidden = true; return; } tip.textContent = t.getAttribute('data-tip')!; tip.hidden = false; tip.style.left = Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 14) + 'px'; });
 (window as any).__rr = { store, S };
-render();
+const $book = document.getElementById('booking')!;
+function route() { const h = location.hash, client = h.startsWith('#/reservar') || h.startsWith('#/marcacao/'); $app.hidden = client; $book.hidden = !client; if (client) mountBooking($book, store, h); else render(); }
+window.addEventListener('hashchange', route); route();

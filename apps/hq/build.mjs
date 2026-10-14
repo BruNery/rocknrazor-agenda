@@ -9,6 +9,7 @@ const html = `<title>Agenda Rock n' Razor</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Rye&display=swap">
 <style>${css}</style>
 <div id="app"></div>
+<div id="booking" hidden></div>
 <script>${js}</script>
 `;
 mkdirSync('dist', { recursive: true }); writeFileSync('dist/index.html', html); console.log('dist/index.html', html.length, 'bytes');

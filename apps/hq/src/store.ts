@@ -1,7 +1,7 @@
-import { findConflicts, totalDuration, addDays, todayLocal, weekday, type Booking, type Block, type Ctx, type Conflict, type DateStr, type Sale, type SaleItem } from '@rr/domain';
+import { findConflicts, totalDuration, addDays, todayLocal, weekday, computeAvailability, assignEmployee, canCancelOrReschedule, type Booking, type Block, type Ctx, type Conflict, type DateStr, type Hold, type Sale, type SaleItem } from '@rr/domain';
 
 export interface Customer { id: string; name: string; cc: string; phone: string; email: string; notes: string }
-export interface B extends Booking { saleId?: string; customerId: string; notes: string; serviceIds: string[]; source: 'online' | 'hq'; createdAt: number; log: { at: number; text: string }[] }
+export interface B extends Booking { saleId?: string; customerId: string; notes: string; serviceIds: string[]; source: 'online' | 'hq'; token?: string; createdAt: number; log: { at: number; text: string }[] }
 export const EMPLOYEES = [
   { id: 'andre', name: 'André', nick: 'Link' }, { id: 'marcos', name: 'Marcos', nick: 'Gringo' },
   { id: 'margarida', name: 'Margarida', nick: 'Mags' }, { id: 'emanuel', name: 'Emanuel', nick: 'Tito' },
@@ -17,11 +17,16 @@ export const PRODUCTS = [{ id: 'pomada', name: 'Pomada modeladora', price: 15 },
 export const PAYMENTS = [{ id: 'cartao', name: 'Cartão' }, { id: 'dinheiro', name: 'Dinheiro' }, { id: 'mbway', name: 'MB WAY' }, { id: 'outro', name: 'Outro' }] as const;
 export interface Note { at: number; employeeId: string; text: string; read: boolean }
 export const STATUSES = [{ id: 'confirmed', name: 'Confirmada' }, { id: 'noshow', name: 'Não compareceu' }, { id: 'cancelled', name: 'Cancelada' }] as const;
+export const HOLD_MS = 5 * 60_000;
+export const MAX_OPEN_ONLINE = 3;
+export const digits = (s: string) => s.replace(/\D/g, '');
+const newToken = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), x => x.toString(16).padStart(2, '0')).join('');
+export type OnlineError = 'dados_invalidos' | 'sem_consentimento' | 'indisponivel' | 'limite_marcacoes' | 'fora_do_prazo' | 'nao_encontrada' | 'ja_cancelada';
 export const COUNTRY_CODES = ['+351', '+55', '+34', '+33', '+44', '+49'];
 const hours = Object.fromEntries([1, 2, 3, 4, 5, 6].map(d => [d, [{ open: 540, close: 1140 }]]));
 
 export class Store {
-  bookings: B[] = []; blocks: Block[] = []; customers: Customer[] = []; sales: Sale[] = []; notes: Note[] = []; private n = 100; private c = 1;
+  bookings: B[] = []; blocks: Block[] = []; holds: (Hold & { id: string })[] = []; customers: Customer[] = []; sales: Sale[] = []; notes: Note[] = []; private n = 100; private c = 1;
   constructor(public nowMs: () => number = Date.now) { this.seed(); this.seedHistory(); }
   private notify(employeeId: string, text: string) { this.notes.unshift({ at: this.nowMs(), employeeId, text, read: false }); }
   today(): DateStr { return todayLocal(this.nowMs()); }
@@ -78,12 +83,56 @@ export class Store {
   previousVisits(b: B) { return this.bookings.filter(x => x.customerId === b.customerId && x.id !== b.id && x.status !== 'cancelled' && (x.date < b.date || (x.date === b.date && x.startMin < b.startMin))).sort((a, c) => (c.date + fmt(c.startMin)).localeCompare(a.date + fmt(a.startMin))); }
   dur(ids: string[], emp: string) { return totalDuration(ids, emp, this.ctx()); }
   ctx(): Ctx {
-    return { openingHours: hours, nowMs: this.nowMs(), blocks: this.blocks, bookings: this.bookings, holds: [],
+    return { openingHours: hours, nowMs: this.nowMs(), blocks: this.blocks, bookings: this.bookings, holds: this.holds,
       services: SERVICES.map(s => ({ id: s.id, durationMin: s.durationMin })),
       employees: EMPLOYEES.map(e => ({ id: e.id, availableOnline: true, autoAssign: true })),
       employeeServices: EMPLOYEES.flatMap(e => SERVICES.map(s => ({ employeeId: e.id, serviceId: s.id, onlineAvailable: true, calendarAvailable: true }))) };
   }
   conflicts(c: { employeeId: string; date: DateStr; startMin: number; endMin: number; serviceIds?: string[]; ignoreBookingId?: string }): Conflict[] { return findConflicts(c, this.ctx()); }
+
+  // ---------- Reserva online (Booking): mesmas regras do motor, nunca sobrepõe ----------
+  private ctxWithout(ignoreBookingId?: string): Ctx { const c = this.ctx(); return ignoreBookingId ? { ...c, bookings: c.bookings.filter(b => b.id !== ignoreBookingId) } : c; }
+  availability(date: DateStr, serviceIds: string[], employeeId?: string, ignoreBookingId?: string) { return computeAvailability(date, serviceIds, employeeId, this.ctxWithout(ignoreBookingId)); }
+  /** Reserva temporária de 5 minutos enquanto o cliente preenche os dados. */
+  hold(a: { date: DateStr; startMin: number; serviceIds: string[]; employeeId?: string }): { ok: true; id: string; employeeId: string; expiresAtMs: number } | { ok: false; error: OnlineError } {
+    const ctx = this.ctx(); const emp = a.employeeId ?? assignEmployee(a.date, a.startMin, a.serviceIds, ctx);
+    if (!emp || !computeAvailability(a.date, a.serviceIds, emp, ctx).some(s => s.startMin === a.startMin)) return { ok: false, error: 'indisponivel' };
+    const id = newToken(), expiresAtMs = this.nowMs() + HOLD_MS;
+    this.holds.push({ id, employeeId: emp, date: a.date, startMin: a.startMin, endMin: a.startMin + totalDuration(a.serviceIds, emp, ctx), expiresAtMs });
+    return { ok: true, id, employeeId: emp, expiresAtMs };
+  }
+  release(holdId?: string) { if (holdId) this.holds = this.holds.filter(h => h.id !== holdId); }
+  bookOnline(a: { name: string; cc: string; phone: string; email: string; consent: boolean; serviceIds: string[]; date: DateStr; startMin: number; employeeId?: string; holdId?: string }): { ok: true; booking: B } | { ok: false; error: OnlineError } {
+    if (!a.consent) return { ok: false, error: 'sem_consentimento' };
+    if (a.name.trim().length < 2 || digits(a.phone).length < 9 || !a.serviceIds.length) return { ok: false, error: 'dados_invalidos' };
+    this.release(a.holdId); // a reserva temporária própria não pode bloquear a própria marcação
+    let cust = this.customers.find(c => c.cc === a.cc && digits(c.phone) === digits(a.phone));
+    const open = cust ? this.bookings.filter(b => b.customerId === cust!.id && b.source === 'online' && b.status === 'confirmed' && b.date >= this.today()).length : 0;
+    if (open >= MAX_OPEN_ONLINE) return { ok: false, error: 'limite_marcacoes' };
+    const ctx = this.ctx(); const emp = a.employeeId ?? assignEmployee(a.date, a.startMin, a.serviceIds, ctx);
+    if (!emp || !computeAvailability(a.date, a.serviceIds, emp, ctx).some(s => s.startMin === a.startMin)) return { ok: false, error: 'indisponivel' };
+    if (!cust) { cust = { id: 'c' + this.c++, name: a.name.trim(), cc: a.cc, phone: a.phone.trim(), email: a.email.trim(), notes: '' }; this.customers.push(cust); }
+    else if (!cust.email && a.email.trim()) cust.email = a.email.trim();
+    const b: B = { id: 'b' + this.n++, employeeId: emp, date: a.date, startMin: a.startMin, endMin: a.startMin + totalDuration(a.serviceIds, emp, ctx), status: 'confirmed', customerId: cust.id, notes: '', serviceIds: a.serviceIds, source: 'online', token: newToken(), createdAt: this.nowMs(), log: [{ at: this.nowMs(), text: 'Criada pelo cliente (reserva online)' }] };
+    this.bookings.push(b); this.notify(emp, `Nova marcação online: ${cust.name}, ${a.date.split('-').reverse().slice(0, 2).join('/')} às ${fmt(b.startMin)}`);
+    return { ok: true, booking: b };
+  }
+  byToken(token: string) { return this.bookings.find(b => b.token && b.token === token); }
+  cancelOnline(token: string): { ok: true } | { ok: false; error: OnlineError } {
+    const b = this.byToken(token); if (!b) return { ok: false, error: 'nao_encontrada' };
+    if (b.status === 'cancelled') return { ok: false, error: 'ja_cancelada' };
+    if (!canCancelOrReschedule(b, this.nowMs())) return { ok: false, error: 'fora_do_prazo' };
+    b.status = 'cancelled'; b.log.push({ at: this.nowMs(), text: 'Cancelada pelo cliente' });
+    this.notify(b.employeeId, `Marcação cancelada pelo cliente: ${this.customer(b.customerId).name}, ${b.date.split('-').reverse().slice(0, 2).join('/')} às ${fmt(b.startMin)}`); return { ok: true };
+  }
+  rescheduleOnline(token: string, date: DateStr, startMin: number): { ok: true } | { ok: false; error: OnlineError } {
+    const b = this.byToken(token); if (!b || b.status === 'cancelled') return { ok: false, error: 'nao_encontrada' };
+    if (!canCancelOrReschedule(b, this.nowMs())) return { ok: false, error: 'fora_do_prazo' };
+    if (!this.availability(date, b.serviceIds, b.employeeId, b.id).some(s => s.startMin === startMin)) return { ok: false, error: 'indisponivel' };
+    const dur = b.endMin - b.startMin, from = `${b.date} ${fmt(b.startMin)}`;
+    Object.assign(b, { date, startMin, endMin: startMin + dur }); b.log.push({ at: this.nowMs(), text: `Reagendada pelo cliente de ${from} para ${date} ${fmt(startMin)}` });
+    this.notify(b.employeeId, `Marcação reagendada pelo cliente: ${this.customer(b.customerId).name}, ${date.split('-').reverse().slice(0, 2).join('/')} às ${fmt(startMin)}`); return { ok: true };
+  }
   /** Cria ou atualiza o cliente (por nome). Devolve o cliente. */
   saveCustomer(d: { id?: string; name: string; cc: string; phone: string; email: string; notes?: string }): Customer {
     const c = (d.id && this.customer(d.id)) || this.customerByName(d.name) || (() => { const n: Customer = { id: 'c' + this.c++, name: d.name, cc: d.cc, phone: d.phone, email: d.email, notes: '' }; this.customers.push(n); return n; })();
