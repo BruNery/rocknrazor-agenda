@@ -1,1 +1,11 @@
-{ "name": "rocknrazor-agenda", "private": true, "workspaces": ["packages/*"], "scripts": { "test": "npm -w @rr/domain test" } }
+{
+  "name": "rocknrazor-agenda",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm test -w @rr/domain && npm test -w @rr/api"
+  }
+}
