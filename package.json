@@ -6,6 +6,6 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "npm test -w @rr/domain && npm test -w @rr/api"
+    "test": "bash scripts/testdb.sh && npm test -w @rr/domain && npm test -w @rr/api && npm test -w @rr/hq"
   }
 }
