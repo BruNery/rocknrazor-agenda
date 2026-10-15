@@ -6,6 +6,8 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "bash scripts/testdb.sh && npm test -w @rr/domain && npm test -w @rr/api && npm test -w @rr/hq"
+    "test": "bash scripts/testdb.sh && npm test -w @rr/domain && npm test -w @rr/api && npm test -w @rr/hq",
+    "build": "RR_API=\"\" npm run build -w @rr/hq && npm run build -w @rr/api",
+    "start": "node apps/api/dist/server.mjs"
   }
 }

@@ -21,6 +21,8 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
 
   app.setErrorHandler((err: any, _req, reply) => reply.code(err.name === 'ZodError' ? 400 : 500).send({ ok: false, error: err.name === 'ZodError' ? 'pedido_invalido' : 'erro_interno', detalhe: err.name === 'ZodError' ? err.issues : undefined }));
 
+  app.get('/healthz', async () => { await pool.query('select 1'); return { ok: true }; });
+
   // Público (Booking)
   app.get('/public/availability', async req => {
     const q = z.object({ date, services: z.string().min(1), employeeId: z.string().optional() }).parse(req.query);
