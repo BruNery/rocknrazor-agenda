@@ -9,7 +9,7 @@ export class FakeNotifier implements Notifier { sent: { kind: string; bookingId:
 export type Result<T> = ({ ok: true } & T) | { ok: false; error: string; conflicts?: Conflict[] };
 
 export function rulesFromRow(r: any): OnlineRules {
-  return { gridMin: r.grid_min, maxWeeksAhead: r.max_weeks_ahead, lastBookingLeadMin: r.last_booking_lead_min, cancelLeadMin: r.cancel_lead_min, holdMin: r.hold_min, maxOpenOnline: r.max_open_online, allowOnlineOverlap: r.allow_online_overlap, anyBarberPolicy: r.any_barber_policy };
+  return { gridMin: r.grid_min, maxWeeksAhead: r.max_weeks_ahead, lastBookingLeadMin: r.last_booking_lead_min, cancelLeadMin: r.cancel_lead_min, holdMin: r.hold_min, maxOpenOnline: r.max_open_online, allowOnlineOverlap: r.allow_online_overlap, anyBarberPolicy: r.any_barber_policy, snapAfterEnd: r.snap_after_end };
 }
 export async function loadRules(db: Pick<Pool, 'query'>): Promise<OnlineRules> { return rulesFromRow((await db.query('select * from shop_settings where id = 1')).rows[0]); }
 

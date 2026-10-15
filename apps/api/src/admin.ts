@@ -18,6 +18,7 @@ const rulesBody = z.object({
   cancelLeadMin: z.number().int().min(0).max(10080),
   holdMin: z.number().int().min(1).max(30),
   maxOpenOnline: z.number().int().min(0).max(20),
+  snapAfterEnd: z.boolean().optional(),
   allowOnlineOverlap: z.boolean(),
   anyBarberPolicy: z.enum(['fewest_bookings', 'first_in_order']),
 }).strict();
@@ -32,8 +33,8 @@ export function registerAdmin(app: FastifyInstance, pool: Pool, needAdmin: (req:
   app.put('/admin/settings', async (req, reply) => {
     const u = await needAdmin(req, reply); if (!u) return;
     const b = rulesBody.parse(req.body);
-    await pool.query(`update shop_settings set grid_min=$1, max_weeks_ahead=$2, last_booking_lead_min=$3, cancel_lead_min=$4, hold_min=$5, max_open_online=$6, allow_online_overlap=$7, any_barber_policy=$8, updated_at=now() where id=1`,
-      [b.gridMin, b.maxWeeksAhead, b.lastBookingLeadMin, b.cancelLeadMin, b.holdMin, b.maxOpenOnline, b.allowOnlineOverlap, b.anyBarberPolicy]);
+    await pool.query(`update shop_settings set grid_min=$1, max_weeks_ahead=$2, last_booking_lead_min=$3, cancel_lead_min=$4, hold_min=$5, max_open_online=$6, allow_online_overlap=$7, any_barber_policy=$8, snap_after_end=coalesce($9, snap_after_end), updated_at=now() where id=1`,
+      [b.gridMin, b.maxWeeksAhead, b.lastBookingLeadMin, b.cancelLeadMin, b.holdMin, b.maxOpenOnline, b.allowOnlineOverlap, b.anyBarberPolicy, b.snapAfterEnd ?? null]);
     await audit(u.username, 'definicoes', b); return { ok: true, rules: await loadRules(pool) };
   });
 

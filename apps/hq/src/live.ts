@@ -3,7 +3,7 @@ import { Store, EMPLOYEES, SERVICES, PRODUCTS, ARCHIVED_EMPLOYEES, ARCHIVED_SERV
 
 export interface Me { username: string; role: 'admin' | 'barber'; employeeId: string | null }
 export interface Catalog {
-  rules: { gridMin: number; maxWeeksAhead: number; lastBookingLeadMin: number; cancelLeadMin: number; holdMin: number; maxOpenOnline: number; allowOnlineOverlap: boolean; anyBarberPolicy: 'fewest_bookings' | 'first_in_order' };
+  rules: { gridMin: number; maxWeeksAhead: number; lastBookingLeadMin: number; cancelLeadMin: number; holdMin: number; maxOpenOnline: number; allowOnlineOverlap: boolean; anyBarberPolicy: 'fewest_bookings' | 'first_in_order'; snapAfterEnd?: boolean };
   employees: { id: string; name: string; nickname: string | null; specialties: string; active: boolean; availableOnline: boolean; autoAssign: boolean; order: number }[];
   services: { id: string; name: string; durationMin: number; pauseMin: number; priceCents: number; active: boolean; pointsPrice: number | null }[];
   products: { id: string; name: string; priceCents: number; stock: number | null; active: boolean; pointsPrice: number | null }[];

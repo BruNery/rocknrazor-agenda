@@ -75,6 +75,14 @@ describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
     await admin.selectOption('form[data-cfg=rules] select[name=policy]', 'first_in_order'); await admin.check('form[data-cfg=rules] input[name=overlap]'); await act(admin, 'form[data-cfg=rules] button[type=submit]', 'Regras guardadas');
     expect((await pool.query('select hold_min, cancel_lead_min, any_barber_policy, allow_online_overlap from shop_settings')).rows[0]).toEqual({ hold_min: 7, cancel_lead_min: 120, any_barber_policy: 'first_in_order', allow_online_overlap: true });
   });
+  it('Definições › Regras: horários do cliente de 30 em 30 e hora logo a seguir ao fim de outra marcação (ligado por defeito; dá para mudar)', async () => {
+    expect((await pool.query('select grid_min, snap_after_end from shop_settings')).rows[0]).toEqual({ grid_min: 30, snap_after_end: true });
+    expect(await admin.isChecked('form[data-cfg=rules] input[name=snap]')).toBe(true); expect(await admin.inputValue('form[data-cfg=rules] select[name=grid]')).toBe('30');
+    await admin.uncheck('form[data-cfg=rules] input[name=snap]'); await admin.selectOption('form[data-cfg=rules] select[name=grid]', '15'); await act(admin, 'form[data-cfg=rules] button[type=submit]', 'Regras guardadas');
+    expect((await pool.query('select grid_min, snap_after_end from shop_settings')).rows[0]).toEqual({ grid_min: 15, snap_after_end: false });
+    await admin.check('form[data-cfg=rules] input[name=snap]'); await admin.selectOption('form[data-cfg=rules] select[name=grid]', '30'); await act(admin, 'form[data-cfg=rules] button[type=submit]', 'Regras guardadas');
+    expect((await pool.query('select grid_min, snap_after_end from shop_settings')).rows[0]).toEqual({ grid_min: 30, snap_after_end: true });
+  });
   it('Definições › Equipa: adicionar barbeiro, criar-lhe o acesso e desativar', async () => {
     await shot(admin, 'regras'); await admin.click('[data-cfg=tab][data-v=equipa]');
     await admin.fill('form[data-cfg=emp-new] input[name=name]', 'Eduardo'); await admin.fill('form[data-cfg=emp-new] input[name=nick]', 'Aquaman'); await act(admin, 'form[data-cfg=emp-new] button[type=submit]', 'Barbeiro adicionado');

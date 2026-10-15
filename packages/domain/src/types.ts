@@ -28,7 +28,8 @@ export interface Hold { employeeId: string; date: DateStr; startMin: number; end
 
 /** Regras de reserva online. Todas configuráveis no HQ (Definições). */
 export interface OnlineRules {
-  gridMin: number;            // 10 — passo da grelha de horários
+  gridMin: number;            // passo dos horários que o cliente vê (a loja usa 30)
+  snapAfterEnd?: boolean;     // mostrar também a hora logo a seguir ao fim de outra marcação/bloqueio (evita buracos)
   maxWeeksAhead: number;      // 8
   lastBookingLeadMin: number; // 60 — antecedência mínima para marcar
   cancelLeadMin: number;      // 180 — cancelar/remarcar até X min antes (0 = até ao início)

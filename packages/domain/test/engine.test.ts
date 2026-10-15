@@ -116,3 +116,31 @@ describe('atribuição, cancelamento e recorrência', () => {
     expect(expandWeekly('2026-10-14', 2, 2)).toEqual(['2026-10-14', '2026-10-28']);
   });
 });
+
+describe('horários que o cliente vê: de 30 em 30 + hora logo a seguir ao fim de outra marcação', () => {
+  const rules = { gridMin: 30, maxWeeksAhead: 8, lastBookingLeadMin: 60, cancelLeadMin: 180, holdMin: 5, maxOpenOnline: 3, allowOnlineOverlap: false, anyBarberPolicy: 'fewest_bookings' as const };
+  const bk = (id: string, startMin: number, endMin: number, status: 'confirmed' | 'cancelled' = 'confirmed') => ({ id, employeeId: 'a', date: D, startMin, endMin, status, customerId: 'c', serviceIds: ['corte'], source: 'hq' as const, createdAt: 0 } as any);
+  const starts = (c: Ctx) => computeAvailability(D, ['corte'], 'a', c).map(x => x.startMin);
+  it('só 30 em 30 quando não há marcações (09:00, 09:30, ...)', () => {
+    const s = starts(base({ rules: { ...rules, snapAfterEnd: true } }));
+    expect(s[0]).toBe(540); expect(s.every(x => x % 30 === 0)).toBe(true); expect(s.length).toBe(Math.floor((1140 - 540 - 40) / 30) + 1);
+  });
+  it('uma marcação que acaba às 12:40 faz aparecer 12:40 (mas não 12:50, 13:10...)', () => {
+    const s = starts(base({ bookings: [bk('x', 12 * 60, 12 * 60 + 40)], rules: { ...rules, snapAfterEnd: true } }));
+    expect(s).toContain(12 * 60 + 40); expect(s).toContain(13 * 60); expect(s).not.toContain(12 * 60 + 50); expect(s).not.toContain(12 * 60 + 10);
+  });
+  it('com a opção desligada, a hora quebrada não aparece', () => {
+    const s = starts(base({ bookings: [bk('x', 12 * 60, 12 * 60 + 40)], rules: { ...rules, snapAfterEnd: false } }));
+    expect(s).not.toContain(12 * 60 + 40); expect(s).toContain(13 * 60);
+  });
+  it('marcação cancelada não cria hora quebrada; o fim de um bloqueio (pausa) cria', () => {
+    const cancelled = starts(base({ bookings: [bk('x', 12 * 60, 12 * 60 + 40, 'cancelled')], rules: { ...rules, snapAfterEnd: true } }));
+    expect(cancelled).not.toContain(12 * 60 + 40);
+    const pause = starts(base({ blocks: [{ id: 'p', employeeId: 'a', date: D, startMin: 12 * 60 + 15, endMin: 12 * 60 + 45 }], rules: { ...rules, snapAfterEnd: true } }));
+    expect(pause).toContain(12 * 60 + 45);
+  });
+  it('a hora quebrada continua a respeitar horário e conflitos (não passa do fecho nem sobrepõe)', () => {
+    const s = starts(base({ bookings: [bk('x', 18 * 60, 18 * 60 + 50), bk('y', 18 * 60 + 50, 19 * 60)], rules: { ...rules, snapAfterEnd: true } }));
+    expect(s.every(x => x + 40 <= 1140)).toBe(true); expect(s).not.toContain(18 * 60 + 50);
+  });
+});

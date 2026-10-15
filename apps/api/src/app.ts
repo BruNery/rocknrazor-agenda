@@ -112,7 +112,7 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
       pool.query("select id, name, duration_min, price_cents, points_price from services where active order by sort_order, id"),
       loadRules(pool)]);
     const es = await pool.query('select employee_id, service_id, duration_min from employee_services where online_available and calendar_available');
-    return { ok: true, rules: { maxWeeksAhead: r.maxWeeksAhead, holdMin: r.holdMin, cancelLeadMin: r.cancelLeadMin, gridMin: r.gridMin },
+    return { ok: true, rules: { maxWeeksAhead: r.maxWeeksAhead, holdMin: r.holdMin, cancelLeadMin: r.cancelLeadMin, gridMin: r.gridMin, snapAfterEnd: !!r.snapAfterEnd },
       employees: e.rows.map(x => ({ id: x.id, name: x.name, nickname: x.nickname, specialties: x.specialties })),
       services: s.rows.map(x => ({ id: x.id, name: x.name, durationMin: x.duration_min, priceCents: x.price_cents, pointsPrice: x.points_price })),
       offers: es.rows.map(x => ({ employeeId: x.employee_id, serviceId: x.service_id, durationMin: x.duration_min })) };

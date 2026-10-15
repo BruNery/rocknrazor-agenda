@@ -68,8 +68,13 @@ export function computeAvailability(date: DateStr, serviceIds: string[], employe
   for (const emp of pool.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id))) {
     if (!offers(ctx, emp.id, serviceIds, true)) continue;
     const dur = totalDuration(serviceIds, emp.id, ctx);
+    // Fins de marcações e de bloqueios do dia: com `snapAfterEnd`, a hora "quebrada" logo a seguir (ex.: 12:40) também é oferecida.
+    const ends = rules.snapAfterEnd ? [...ctx.bookings.filter(b => b.employeeId === emp.id && b.date === date && b.status !== 'cancelled').map(b => b.endMin), ...ctx.blocks.filter(b => b.employeeId === emp.id && b.date === date && !b.allDay).map(b => b.endMin!)] : [];
     for (const h of hours) {
-      for (let s = Math.ceil(h.open / rules.gridMin) * rules.gridMin; s + dur <= h.close; s += rules.gridMin) {
+      const starts = new Set<number>();
+      for (let s = Math.ceil(h.open / rules.gridMin) * rules.gridMin; s + dur <= h.close; s += rules.gridMin) starts.add(s);
+      for (const e of ends) if (e >= h.open && e + dur <= h.close) starts.add(e);
+      for (const s of [...starts].sort((a, b) => a - b)) {
         if (localToEpochMs(date, s) < ctx.nowMs + rules.lastBookingLeadMin * 60_000) continue;
         if (findConflicts({ employeeId: emp.id, date, startMin: s, endMin: s + dur }, ctx, { online: true }).length) continue;
         if (employeeId) slots.push({ startMin: s, employeeId: emp.id });

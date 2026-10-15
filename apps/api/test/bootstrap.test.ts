@@ -55,3 +55,26 @@ describe('mudar a própria palavra-passe', () => {
     expect((await login('nova-palavra-longa')).statusCode).toBe(200);
   });
 });
+
+describe('regra: horários de 30 em 30 + hora quebrada (configurável no HQ)', () => {
+  it('o admin liga/desliga; a base nova traz 30 min com hora quebrada; o Booking só oferece esses horários', async () => {
+    const p3 = await freshDb(); await p3.query('update shop_settings set grid_min = 30, snap_after_end = true');
+    await createAdmin(p3, 'bruno', 'uma-palavra-longa'); const app = buildApp(p3, new FakeNotifier(), () => Date.UTC(2026, 9, 14, 7, 0)); // quarta, 08:00 locais
+    const cookie = String((await app.inject({ method: 'POST', url: '/auth/login', payload: { username: 'bruno', password: 'uma-palavra-longa' } })).headers['set-cookie']).split(';')[0];
+    const day = '2026-10-21'; // quarta seguinte
+    await p3.query("insert into customers(name, phone) values ('Rui', '913357837')");
+    await p3.query("insert into bookings(id, employee_id, date, start_min, end_min, status, customer_id, service_ids, source) select 'x','a',$1,720,760,'confirmed', id, array['corte'],'hq' from customers limit 1", [day]);
+    const slots = async () => ((await app.inject({ method: 'GET', url: `/public/availability?date=${day}&services=corte&employeeId=a` })).json().slots as { startMin: number }[]).map(s => s.startMin);
+    let s = await slots(); expect(s).toContain(760); expect(s).toContain(780); expect(s).not.toContain(770); expect(s).not.toContain(550);
+    const put = (snap: boolean) => app.inject({ method: 'PUT', url: '/admin/settings', headers: { cookie }, payload: { gridMin: 30, maxWeeksAhead: 8, lastBookingLeadMin: 60, cancelLeadMin: 180, holdMin: 5, maxOpenOnline: 3, allowOnlineOverlap: false, anyBarberPolicy: 'fewest_bookings', snapAfterEnd: snap } });
+    expect((await put(false)).statusCode).toBe(200); s = await slots(); expect(s).not.toContain(760); expect(s).toContain(780);
+    expect((await put(true)).statusCode).toBe(200); expect(await slots()).toContain(760);
+    // sem enviar snapAfterEnd mantém o valor
+    await app.inject({ method: 'PUT', url: '/admin/settings', headers: { cookie }, payload: { gridMin: 30, maxWeeksAhead: 8, lastBookingLeadMin: 60, cancelLeadMin: 180, holdMin: 5, maxOpenOnline: 3, allowOnlineOverlap: false, anyBarberPolicy: 'fewest_bookings' } });
+    expect(await slots()).toContain(760);
+    // reservar uma hora fora da grelha é recusado (a validação usa a mesma regra)
+    const bad = await app.inject({ method: 'POST', url: '/public/holds', payload: { date: day, startMin: 770, serviceIds: ['corte'], employeeId: 'a' } }); expect(bad.statusCode).toBe(409);
+    const ok = await app.inject({ method: 'POST', url: '/public/holds', payload: { date: day, startMin: 760, serviceIds: ['corte'], employeeId: 'a' } }); expect(ok.statusCode).toBe(200);
+    await p3.end();
+  });
+});

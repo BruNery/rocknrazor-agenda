@@ -143,7 +143,8 @@ function freeSlots(emp: string, date: DateStr, svcs: string[], dur: number, igno
   if (live && date > addDays(today, 180)) return { slots: [], why: 'Dia demasiado longe para listar horários.' };
   const hrs = store.hours[weekday(date)] ?? [];
   if (!hrs.length) return { slots: [], why: 'A loja está fechada nesse dia.' };
-  const grid = store.rules?.gridMin ?? 10, out: number[] = []; let notOffered = false;
+  // no HQ a grelha é fina (10 min); os 30 min são só para o cliente
+  const grid = 10, out: number[] = []; let notOffered = false;
   for (const h of hrs) for (let t = Math.ceil(h.open / grid) * grid; t + dur <= h.close; t += grid) {
     if (localToEpochMs(date, t) < store.nowMs()) continue;
     const cs = store.conflicts({ employeeId: emp, date, startMin: t, endMin: t + dur, serviceIds: svcs, ignoreBookingId: ignoreId });
