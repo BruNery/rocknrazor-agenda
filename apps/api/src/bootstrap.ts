@@ -5,6 +5,7 @@ import { hashPassword } from './auth';
 export async function createAdmin(pool: Pool, username: string, password: string): Promise<void> {
   if (!username.trim() || password.length < 10) throw new Error('Administrador: utilizador obrigatório e palavra-passe com 10+ caracteres');
   await pool.query("insert into users(username, password_hash, role) values ($1,$2,'admin') on conflict (username) do update set password_hash = excluded.password_hash, active = true", [username.trim().toLowerCase(), await hashPassword(password)]);
+  await pool.query('delete from login_failures where username = $1', [username.trim().toLowerCase()]); // repor a palavra-passe também desbloqueia
 }
 
 /** Só o que é certo: a equipa e o horário base. Serviços e preços entram pelo HQ. */
