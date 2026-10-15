@@ -81,3 +81,37 @@ describe('ecrã do HQ ligado ao servidor', () => {
     expect((await call(adm, 'GET', `/hq/blocks?from=${D}&to=${D}`)).json().blocks).toHaveLength(1);
   });
 });
+
+describe('migrações, contas e clientes (admin)', () => {
+  it('migrar duas vezes não repete nada', async () => { const { migrate } = await import('../src/migrate'); expect(await migrate(pool)).toEqual([]); });
+  it('lista de contas, reativar; só admin', async () => {
+    expect((await call(andre, 'GET', '/admin/users')).statusCode).toBe(403);
+    const us = (await call(adm, 'GET', '/admin/users')).json().users; expect(us.map((u: any) => u.username).sort()).toEqual(['admin', 'andre', 'marcos']);
+    const id = us.find((u: any) => u.username === 'andre').id;
+    await call(adm, 'POST', `/admin/users/${id}/deactivate`); expect((await call(adm, 'GET', '/admin/users')).json().users.find((u: any) => u.id === id).active).toBe(false);
+    await call(adm, 'POST', `/admin/users/${id}/activate`); expect((await call(adm, 'GET', '/admin/users')).json().users.find((u: any) => u.id === id).active).toBe(true);
+  });
+  it('procurar clientes por nome, telefone ou ID RNR; mostra pontos; barbeiro não acede', async () => {
+    await mk(adm); const cid = (await call(adm, 'GET', `/hq/bookings?date=${D}`)).json().bookings[0].customer.id;
+    await call(adm, 'POST', `/admin/customers/${cid}/points`, { delta: 40, note: 'Boas-vindas' });
+    for (const q of ['rui', '910000103', '910 000']) expect((await call(adm, 'GET', `/admin/customers?q=${encodeURIComponent(q)}`)).json().customers[0]).toMatchObject({ name: 'Rui', points: 40 });
+    const code = (await call(adm, 'GET', `/admin/customers/${cid}/points`)).json().memberCode;
+    expect((await call(adm, 'GET', `/admin/customers?q=${code}`)).json().customers).toHaveLength(1);
+    expect((await call(adm, 'GET', '/admin/customers?q=zzzz')).json().customers).toHaveLength(0);
+    expect((await call(andre, 'GET', '/admin/customers?q=rui')).statusCode).toBe(403);
+  });
+});
+
+describe('servir a app', () => {
+  it('serve index e ficheiros, nunca sai da pasta, e a API continua a responder JSON', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'rr-')); writeFileSync(join(dir, 'index.html'), '<title>RR</title>'); writeFileSync(join(dir, 'sw.js'), '//sw');
+    const a2 = buildApp(pool, new FakeNotifier(), () => NOW, { publicDir: dir });
+    expect((await a2.inject({ url: '/' })).body).toContain('<title>RR</title>');
+    const sw = await a2.inject({ url: '/sw.js' }); expect(sw.headers['content-type']).toContain('javascript'); expect(sw.headers['cache-control']).toBe('no-cache');
+    expect((await a2.inject({ url: '/nao-existe.png' })).statusCode).toBe(404);
+    expect((await a2.inject({ url: '/%2e%2e/%2e%2e/etc/passwd' })).body).not.toContain('root:'); // cai na página principal, nunca no ficheiro do sistema
+    expect((await a2.inject({ url: '/hq/nao-existe' })).headers['content-type']).toContain('json');
+    expect((await a2.inject({ url: '/public/catalog' })).json().ok).toBe(true);
+  });
+});

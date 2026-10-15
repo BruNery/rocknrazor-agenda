@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { randomInt } from 'node:crypto';
 import { loadRules } from './service';
 import type { User } from './auth';
+import { hashPassword } from './auth';
 
 const id = z.string().regex(/^[a-z0-9_-]{1,40}$/);
 const cents = z.number().int().min(0).max(1_000_000);
@@ -155,5 +156,27 @@ export function registerAdmin(app: FastifyInstance, pool: Pool, needAdmin: (req:
       await c.query('commit'); await audit(u.username, 'pontos_manual', { customerId: cid, ...b });
       return { ok: true, balance: bal + b.delta };
     } catch (e) { await c.query('rollback'); throw e; } finally { c.release(); }
+  });
+
+  // --- Contas de acesso dos barbeiros (o admin cria, repõe palavra-passe, desativa e reativa) ---
+  app.get('/admin/users', async (req, reply) => {
+    if (!(await needAdmin(req, reply))) return;
+    const r = await pool.query('select id, username, role, employee_id, active from users order by id');
+    return { ok: true, users: r.rows.map(x => ({ id: Number(x.id), username: x.username, role: x.role, employeeId: x.employee_id, active: x.active })) };
+  });
+  app.post('/admin/users/:id/activate', async (req, reply) => {
+    const u = await needAdmin(req, reply); if (!u) return; const uid = Number((req.params as any).id);
+    const r = await pool.query('update users set active = true where id = $1 and (employee_id is null or employee_id in (select id from employees where active))', [uid]);
+    if (!r.rowCount) return reply.code(404).send({ ok: false, error: 'nao_encontrado' }); await audit(u.username, 'conta_ativar', { id: uid }); return { ok: true };
+  });
+
+  // --- Clientes (só admin): procurar e ver pontos ---
+  app.get('/admin/customers', async (req, reply) => {
+    if (!(await needAdmin(req, reply))) return;
+    const q = z.object({ q: z.string().trim().max(80).default('') }).parse(req.query);
+    const like = `%${q.q.replace(/[%_\\]/g, m => '\\' + m)}%`, dg = q.q.replace(/\D/g, '');
+    const r = await pool.query(`select c.id, c.name, c.phone, c.email, c.member_code, coalesce((select sum(delta) from points_ledger p where p.customer_id = c.id), 0)::int points
+      from customers c where $1 = '%%' or c.name ilike $1 or c.member_code ilike $1 or ($2 <> '' and regexp_replace(c.phone, '\\D', '', 'g') like '%' || $2 || '%') order by c.name limit 30`, [like, dg]);
+    return { ok: true, customers: r.rows.map(x => ({ id: Number(x.id), name: x.name, phone: x.phone, email: x.email ?? '', memberCode: x.member_code, points: x.points })) };
   });
 }

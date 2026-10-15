@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Pool } from 'pg';
 import { BookingService, loadRules, type Notifier } from './service';
 import { registerAdmin } from './admin';
+import { registerStatic } from './static';
 import type { StaffNotifier } from './push';
 import { barberMetrics, shopMetrics, revenueByDay, periodBefore, weekday, addDays, type Sale } from '@rr/domain';
 import { hashPassword, verifyPassword, DUMMY_HASH, createSession, userFromToken, sha, cookieToken, sessionCookie, clearCookie, MAX_FAILURES, FAILURE_WINDOW_MIN, type User } from './auth';
@@ -12,7 +13,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const min = z.number().int().min(0).max(1440);
 const services = z.array(z.string().min(1)).min(1);
 
-export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean; staff?: StaffNotifier; vapidPublicKey?: string } = {}) {
+export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean; staff?: StaffNotifier; vapidPublicKey?: string; publicDir?: string } = {}) {
   const secure = !!opts.secureCookies;
   const app = Fastify();
   const svc = new BookingService(pool, notifier, opts.staff);
@@ -299,5 +300,6 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
     const mk = (a: string, b: string) => { const base = { from: a, to: b, bookings, sales, availableMinutes: mins(a, b) }; return who ? { total: barberMetrics({ ...base, employeeId: who }) } : shopMetrics(base, emps); };
     return { ok: true, scope: who ?? 'loja', period: { from: q.from, to: q.to }, current: mk(q.from, q.to), previous: mk(prev.from, prev.to), revenueByDay: revenueByDay(sales, who ? [who] : null, q.from, q.to) };
   });
+  if (opts.publicDir) registerStatic(app, opts.publicDir);
   return app;
 }
