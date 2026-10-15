@@ -120,4 +120,14 @@ describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
     const slots = (await (await fetch(`${base}/public/availability?date=${d}&services=corte&employeeId=marcos`)).json()).slots as { startMin: number }[];
     expect(slots.some(s => s.startMin >= 780 && s.startMin < 840)).toBe(false);
   });
+  it('A minha conta: o administrador muda a própria palavra-passe (a atual errada é recusada)', async () => {
+    const admin = await open(); await admin.waitForSelector('#loginf'); await login(admin, 'bruno', PW); await admin.waitForSelector('.agenda');
+    await admin.click('[data-view=mine]'); await admin.waitForSelector('form[data-cfg=mypw]');
+    const fill = async (cur: string, a: string, b: string) => { await admin.fill('form[data-cfg=mypw] [name=cur]', cur); await admin.fill('form[data-cfg=mypw] [name=pw]', a); await admin.fill('form[data-cfg=mypw] [name=pw2]', b); };
+    await fill('errada-errada', 'a-nova-palavra-longa', 'a-nova-palavra-longa'); await act(admin, 'form[data-cfg=mypw] button[type=submit]', 'não está certa');
+    await fill(PW, 'a-nova-palavra-longa', 'diferente-diferente'); await act(admin, 'form[data-cfg=mypw] button[type=submit]', 'não são iguais');
+    await fill(PW, 'a-nova-palavra-longa', 'a-nova-palavra-longa'); await act(admin, 'form[data-cfg=mypw] button[type=submit]', 'Palavra-passe mudada');
+    const tryLogin = async (pw: string) => (await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'bruno', password: pw }) })).status;
+    expect(await tryLogin(PW)).toBe(401); expect(await tryLogin('a-nova-palavra-longa')).toBe(200);
+  });
 });

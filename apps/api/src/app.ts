@@ -67,6 +67,19 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
   const needAdmin = async (req: any, reply: any): Promise<User | null> => { const u = await need(req, reply); if (!u) return null; if (u.role !== 'admin') { reply.code(403).send({ ok: false, error: 'sem_permissao' }); return null; } return u; };
   app.get('/auth/me', async (req, reply) => { const u = await need(req, reply); if (u) return { ok: true, user: { username: u.username, role: u.role, employeeId: u.employeeId } }; });
 
+  // A própria pessoa muda a sua palavra-passe (confirma a atual; as outras sessões fecham)
+  app.post('/auth/password', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ current: z.string().min(1).max(200), password: z.string().min(10).max(200) }).parse(req.body);
+    const fails = await pool.query("select count(*)::int n from login_failures where username = $1 and at > now() - make_interval(mins => $2)", [u.username, FAILURE_WINDOW_MIN]);
+    if (fails.rows[0].n >= MAX_FAILURES) return reply.code(429).send({ ok: false, error: 'demasiadas_tentativas' });
+    const row = (await pool.query('select password_hash from users where id = $1', [u.id])).rows[0];
+    if (!(await verifyPassword(b.current, row.password_hash))) { await pool.query('insert into login_failures(username) values ($1)', [u.username]); return reply.code(403).send({ ok: false, error: 'palavra_passe_atual_errada' }); }
+    await pool.query('update users set password_hash = $2 where id = $1', [u.id, await hashPassword(b.password)]);
+    const t = cookieToken(req.headers.cookie); await pool.query('delete from sessions where user_id = $1 and token_hash <> $2', [u.id, t ? sha(t) : '']);
+    return { ok: true };
+  });
+
   // Contas (só o administrador cria barbeiros e repõe palavras-passe)
   app.post('/admin/users', async (req, reply) => {
     if (!(await needAdmin(req, reply))) return;

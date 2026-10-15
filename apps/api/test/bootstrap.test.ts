@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type pg from 'pg';
 import { buildApp } from '../src/app';
 import { FakeNotifier } from '../src/service';
-import { firstRun, vapidKeys } from '../src/bootstrap';
+import { createAdmin, firstRun, vapidKeys } from '../src/bootstrap';
 import { freshDb } from './helpers';
 
 let pool: pg.Pool;
@@ -32,5 +32,26 @@ describe('primeiro arranque', () => {
     const app = buildApp(pool, new FakeNotifier());
     const r = await app.inject({ method: 'GET', url: '/healthz' });
     expect(r.statusCode).toBe(200); expect(r.json()).toEqual({ ok: true });
+  });
+});
+
+describe('mudar a própria palavra-passe', () => {
+  it('exige a atual, aplica a nova, fecha as outras sessões e mantém a atual', async () => {
+    await createAdmin(pool, 'bruno', 'uma-palavra-longa');
+    const app = buildApp(pool, new FakeNotifier());
+    const login = async (pw: string) => app.inject({ method: 'POST', url: '/auth/login', payload: { username: 'bruno', password: pw } });
+    const cookie = (r: any) => String(r.headers['set-cookie']).split(';')[0];
+    const a = await login('uma-palavra-longa'), b = await login('uma-palavra-longa');
+    expect(a.statusCode).toBe(200);
+    const bad = await app.inject({ method: 'POST', url: '/auth/password', headers: { cookie: cookie(a) }, payload: { current: 'errada-errada', password: 'nova-palavra-longa' } });
+    expect(bad.statusCode).toBe(403); expect(bad.json().error).toBe('palavra_passe_atual_errada');
+    expect((await app.inject({ method: 'POST', url: '/auth/password', headers: { cookie: cookie(a) }, payload: { current: 'uma-palavra-longa', password: 'curta' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/auth/password', payload: { current: 'x', password: 'nova-palavra-longa' } })).statusCode).toBe(401);
+    const ok = await app.inject({ method: 'POST', url: '/auth/password', headers: { cookie: cookie(a) }, payload: { current: 'uma-palavra-longa', password: 'nova-palavra-longa' } });
+    expect(ok.statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/auth/me', headers: { cookie: cookie(a) } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/auth/me', headers: { cookie: cookie(b) } })).statusCode).toBe(401);
+    expect((await login('uma-palavra-longa')).statusCode).toBe(401);
+    expect((await login('nova-palavra-longa')).statusCode).toBe(200);
   });
 });
