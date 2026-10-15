@@ -129,3 +129,39 @@ describe('pontos: ajuste manual pelo HQ', () => {
     expect((await pool.query("select actor from audit_log where action='pontos_manual'")).rows[0].actor).toBe('admin');
   });
 });
+
+describe('cada barbeiro abre e fecha o seu horário', () => {
+  const slots = (e: string) => svc.availability(D, ['corte'], e, NOW);
+  it('pausa semanal (almoço) tira esses horários só desse barbeiro; cada um define a sua', async () => {
+    expect((await call(bar, 'PUT', '/hq/pauses', { pauses: [{ weekday: 3, startMin: 780, endMin: 840, label: 'Almoço' }] })).statusCode).toBe(200); // 14/10 é quarta
+    const a = await slots('a'), b = await slots('b');
+    expect(a.some(s => s.startMin >= 745 && s.startMin < 840)).toBe(false); expect(a.some(s => s.startMin === 840)).toBe(true);
+    expect(b.some(s => s.startMin === 780)).toBe(true);
+    expect((await call(bar, 'GET', '/hq/availability?from=2026-10-01&to=2026-10-31')).json().pauses[0]).toMatchObject({ weekday: 3, startMin: 780, label: 'Almoço' });
+  });
+  it('fechar um dia inteiro ou uma janela; reabrir apagando o bloqueio; avisa se já havia marcações', async () => {
+    await svc.createHq({ actor: 'x', employeeId: 'a', date: D, startMin: 600, endMin: 640, serviceIds: ['corte'], notify: false, nowMs: NOW });
+    const k = await call(bar, 'POST', '/hq/blocks', { date: D, startMin: 570, endMin: 660, reason: 'Médico' });
+    expect(k.json()).toMatchObject({ ok: true, bookingsInside: 1 });
+    expect((await slots('a')).some(s => s.startMin >= 540 && s.startMin < 660)).toBe(false);
+    expect((await call(bar, 'DELETE', `/hq/blocks/${k.json().id}`)).statusCode).toBe(200);
+    expect((await slots('a')).some(s => s.startMin === 660)).toBe(true);
+    await call(bar, 'POST', '/hq/blocks', { date: D, allDay: true });
+    expect(await slots('a')).toEqual([]);
+    expect((await slots('b')).length).toBeGreaterThan(0);
+  });
+  it('barbeiro só mexe no seu calendário; admin mexe em qualquer um', async () => {
+    expect((await call(bar, 'POST', '/hq/blocks', { employeeId: 'b', date: D, allDay: true })).statusCode).toBe(403);
+    expect((await call(bar, 'PUT', '/hq/pauses', { employeeId: 'b', pauses: [] })).statusCode).toBe(403);
+    expect((await call(bar, 'GET', '/hq/availability?employeeId=b&from=2026-10-01&to=2026-10-31')).statusCode).toBe(403);
+    const k = await call(adm, 'POST', '/hq/blocks', { employeeId: 'b', date: D, allDay: true });
+    expect(k.statusCode).toBe(200);
+    expect((await call(bar, 'DELETE', `/hq/blocks/${k.json().id}`)).statusCode).toBe(404); // não revela nem apaga o de outro
+    expect((await call(adm, 'DELETE', `/hq/blocks/${k.json().id}`)).statusCode).toBe(200);
+    expect((await call(adm, 'POST', '/hq/blocks', { date: D, allDay: true })).statusCode).toBe(400); // admin tem de indicar o barbeiro
+  });
+  it('janelas inválidas são recusadas', async () => {
+    expect((await call(bar, 'POST', '/hq/blocks', { date: D, startMin: 700, endMin: 600 })).statusCode).toBe(400);
+    expect((await call(bar, 'PUT', '/hq/pauses', { pauses: [{ weekday: 1, startMin: 800, endMin: 700 }] })).statusCode).toBe(400);
+  });
+});

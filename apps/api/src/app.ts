@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Pool } from 'pg';
 import { BookingService, loadRules, type Notifier } from './service';
@@ -150,6 +151,52 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
   app.post('/push/unsubscribe', async (req, reply) => {
     const u = await need(req, reply); if (!u) return; const b = z.object({ endpoint: z.string() }).parse(req.body);
     await pool.query('delete from push_subscriptions where endpoint = $1 and user_id = $2', [b.endpoint, u.id]); return { ok: true };
+  });
+
+  // ---------- A minha disponibilidade: cada barbeiro abre/fecha o seu horário (o admin trata de qualquer um) ----------
+  /** Barbeiro só gere o próprio calendário; o admin o de qualquer barbeiro (indicado em employeeId). */
+  const target = (u: User, requested?: string) => (u.role === 'barber' ? (requested && requested !== u.employeeId ? null : u.employeeId) : requested ?? null);
+  app.get('/hq/availability', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const q = z.object({ employeeId: z.string().optional(), from: date, to: date }).parse(req.query);
+    const emp = target(u, q.employeeId); if (!emp) return u.role === 'barber' ? forbidden(reply) : reply.code(400).send({ ok: false, error: 'pedido_invalido' });
+    const bl = await pool.query("select id, to_char(date,'YYYY-MM-DD') d, all_day, start_min, end_min, reason from blocks where employee_id = $1 and date between $2 and $3 order by date, start_min", [emp, q.from, q.to]);
+    const pa = await pool.query('select id, weekday, start_min, end_min, label from employee_pauses where employee_id = $1 order by weekday, start_min', [emp]);
+    return { ok: true, employeeId: emp, blocks: bl.rows.map(x => ({ id: x.id, date: x.d, allDay: x.all_day, startMin: x.start_min, endMin: x.end_min, reason: x.reason })), pauses: pa.rows.map(x => ({ id: Number(x.id), weekday: x.weekday, startMin: x.start_min, endMin: x.end_min, label: x.label })) };
+  });
+  app.post('/hq/blocks', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ employeeId: z.string().optional(), date, allDay: z.boolean().optional(), startMin: min.optional(), endMin: min.optional(), reason: z.string().max(120).optional() }).parse(req.body);
+    const emp = target(u, b.employeeId); if (!emp) return u.role === 'barber' ? forbidden(reply) : reply.code(400).send({ ok: false, error: 'pedido_invalido' });
+    if (!b.allDay && (b.startMin == null || b.endMin == null || b.endMin <= b.startMin)) return reply.code(400).send({ ok: false, error: 'pedido_invalido' });
+    const id = randomUUID();
+    try { await pool.query('insert into blocks(id, employee_id, date, all_day, start_min, end_min, reason, created_by) values ($1,$2,$3,$4,$5,$6,$7,$8)', [id, emp, b.date, !!b.allDay, b.allDay ? null : b.startMin, b.allDay ? null : b.endMin, b.reason ?? null, u.id]); }
+    catch (e: any) { if (e.code === '23503') return reply.code(422).send({ ok: false, error: 'colaborador_desconhecido' }); throw e; }
+    // Não cancela nada sozinho: avisa se já havia marcações nessa janela, para o barbeiro tratar delas.
+    const hit = await pool.query("select count(*)::int n from bookings where employee_id = $1 and date = $2 and status = 'confirmed' and ($3::boolean or (start_min < $5 and $4 < end_min))", [emp, b.date, !!b.allDay, b.startMin ?? 0, b.endMin ?? 0]);
+    await pool.query('insert into audit_log(actor, action, after) values ($1,$2,$3)', [u.username, 'bloqueio_criar', { id, employeeId: emp, ...b }]);
+    return { ok: true, id, bookingsInside: hit.rows[0].n };
+  });
+  app.delete('/hq/blocks/:id', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const r = await pool.query('delete from blocks where id = $1 and ($2::text is null or employee_id = $2)', [(req.params as any).id, u.role === 'barber' ? u.employeeId : null]);
+    if (!r.rowCount) return notFound(reply);
+    await pool.query('insert into audit_log(actor, action, after) values ($1,$2,$3)', [u.username, 'bloqueio_apagar', { id: (req.params as any).id }]); return { ok: true };
+  });
+  /** Pausas que se repetem toda a semana (ex.: almoço 13:00–14:00 de segunda a sexta). Substitui o conjunto do barbeiro. */
+  app.put('/hq/pauses', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const b = z.object({ employeeId: z.string().optional(), pauses: z.array(z.object({ weekday: z.number().int().min(0).max(6), startMin: min, endMin: min, label: z.string().max(60).optional() }).refine(p => p.endMin > p.startMin)).max(40) }).parse(req.body);
+    const emp = target(u, b.employeeId); if (!emp) return u.role === 'barber' ? forbidden(reply) : reply.code(400).send({ ok: false, error: 'pedido_invalido' });
+    const c = await pool.connect();
+    try {
+      await c.query('begin');
+      if (!(await c.query('select 1 from employees where id = $1', [emp])).rowCount) { await c.query('rollback'); return reply.code(404).send({ ok: false, error: 'nao_encontrado' }); }
+      await c.query('delete from employee_pauses where employee_id = $1', [emp]);
+      for (const p of b.pauses) await c.query('insert into employee_pauses(employee_id, weekday, start_min, end_min, label) values ($1,$2,$3,$4,$5)', [emp, p.weekday, p.startMin, p.endMin, p.label ?? '']);
+      await c.query('commit');
+    } catch (e) { await c.query('rollback'); throw e; } finally { c.release(); }
+    await pool.query('insert into audit_log(actor, action, after) values ($1,$2,$3)', [u.username, 'pausas', { employeeId: emp, pauses: b.pauses }]); return { ok: true };
   });
 
   // Atendimento (venda) registado na app. Não processa pagamentos.

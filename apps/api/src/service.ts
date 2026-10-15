@@ -22,6 +22,7 @@ async function loadCtx(db: PoolClient, date: DateStr, nowMs: number): Promise<Ct
   const es = await db.query('select employee_id, service_id, online_available, calendar_available, duration_min from employee_services');
   const oh = await db.query('select weekday, open_min, close_min from opening_hours');
   const bl = await db.query("select id, employee_id, to_char(date,'YYYY-MM-DD') d, all_day, start_min, end_min from blocks where date = $1", [date]);
+  const pa = await db.query('select id, employee_id, start_min, end_min from employee_pauses where weekday = extract(dow from $1::date)', [date]);
   const bk = await db.query("select id, employee_id, to_char(date,'YYYY-MM-DD') d, start_min, end_min, status from bookings where date = $1", [date]);
   const ho = await db.query("select employee_id, to_char(date,'YYYY-MM-DD') d, start_min, end_min, extract(epoch from expires_at)*1000 ms from holds where date = $1", [date]);
   const openingHours: Ctx['openingHours'] = {};
@@ -31,7 +32,8 @@ async function loadCtx(db: PoolClient, date: DateStr, nowMs: number): Promise<Ct
     employees: emp.rows.map(r => ({ id: r.id, availableOnline: r.available_online, autoAssign: r.auto_assign, order: r.sort_order })),
     services: svc.rows.map(r => ({ id: r.id, durationMin: r.duration_min, pauseMin: r.pause_min })),
     employeeServices: es.rows.map(r => ({ employeeId: r.employee_id, serviceId: r.service_id, onlineAvailable: r.online_available, calendarAvailable: r.calendar_available, durationMin: r.duration_min ?? undefined })),
-    blocks: bl.rows.map(r => ({ id: r.id, employeeId: r.employee_id, date: r.d, allDay: r.all_day, startMin: r.start_min ?? undefined, endMin: r.end_min ?? undefined })),
+    blocks: [...bl.rows.map(r => ({ id: r.id, employeeId: r.employee_id, date: r.d, allDay: r.all_day, startMin: r.start_min ?? undefined, endMin: r.end_min ?? undefined })),
+      ...pa.rows.map(r => ({ id: `pausa-${r.id}`, employeeId: r.employee_id, date, startMin: r.start_min, endMin: r.end_min }))],
     bookings: bk.rows.map(r => ({ id: r.id, employeeId: r.employee_id, date: r.d, startMin: r.start_min, endMin: r.end_min, status: r.status })),
     holds: ho.rows.map(r => ({ employeeId: r.employee_id, date: r.d, startMin: r.start_min, endMin: r.end_min, expiresAtMs: Number(r.ms) })),
   };
