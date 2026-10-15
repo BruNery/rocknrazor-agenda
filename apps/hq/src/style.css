@@ -202,3 +202,9 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .cfg .plist { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; } .cfg .plist li { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .cfg .log { padding-left: 18px; } .who.muted { padding: 0 6px; }
 @media (max-width: 640px) { .cfg .two { grid-template-columns: 1fr; } .top { flex-wrap: wrap; } }
+
+/* horários livres ao lado do dia (Mover, ficha, Nova marcação) */
+.slots { margin: 8px 0 12px; } .slotsh { font-size: .78rem; color: var(--muted, #8a8178); margin-bottom: 6px; }
+.slotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; max-height: 180px; overflow: auto; }
+.slot { border: 1px solid var(--border); background: var(--surface-2, transparent); color: inherit; border-radius: 8px; padding: 7px 0; font: inherit; font-size: .85rem; cursor: pointer; }
+.slot:hover { border-color: var(--gold, #C9A24B); } .slot.on { background: var(--gold, #C9A24B); color: #0A0605; border-color: var(--gold, #C9A24B); font-weight: 600; }

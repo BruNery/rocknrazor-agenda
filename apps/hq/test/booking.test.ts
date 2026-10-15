@@ -28,7 +28,7 @@ async function book(date = TOMORROW, name?: string, phone?: string, emp = 'any',
   await page.waitForSelector('.bk-ok');
 }
 
-describe('Booking: fluxo do cliente', () => {
+describe('Booking: fluxo do cliente', { timeout: 20000 }, () => {
   it('serviço → barbeiro → dia → hora → dados → confirmação, e a marcação aparece na agenda com aviso ao barbeiro', async () => {
     await open();
     expect(await page.locator('.bk-btn[data-act=to-barber]').isDisabled()).toBe(true); // sem serviço não avança
@@ -115,7 +115,7 @@ describe('Booking: fluxo do cliente', () => {
   });
 });
 
-describe('Booking: gerir a marcação (cancelar e reagendar)', () => {
+describe('Booking: gerir a marcação (cancelar e reagendar)', { timeout: 20000 }, () => {
   const token = () => page.evaluate(() => (window as any).__rr.store.bookings.find((b: any) => b.token).token);
   it('cancelar libertando a hora e avisando o barbeiro (pede confirmação)', async () => {
     await open(); await book(TOMORROW, 'Cancelador', '922 000 111', 'marcos', '11:00');

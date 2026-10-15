@@ -12,7 +12,7 @@ export interface Catalog {
   pauses: { employeeId: string; weekday: number; startMin: number; endMin: number; label: string }[];
 }
 const CLS = ['s-corte', 's-trim', 's-barba', 's-outro'];
-const WINDOW_BACK = 190, WINDOW_FWD = 70;
+const WINDOW_BACK = 190, WINDOW_FWD = 190;
 
 /** Ligação ao servidor: sessão por cookie, leitura de tudo o que o ecrã precisa e escritas que voltam a ler. */
 export class Live {

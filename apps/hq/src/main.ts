@@ -1,4 +1,4 @@
-import { addDays, weekday, type Conflict, type DateStr } from '@rr/domain';
+import { addDays, weekday, localToEpochMs, type Conflict, type DateStr } from '@rr/domain';
 import { Store, EMPLOYEES, SERVICES, STATUSES, COUNTRY_CODES, PRODUCTS, PAYMENTS, fmt, empOf, svcOf, type B } from './store';
 import { Live, joinPhone } from './live';
 import { C as CF, cfgHtml, mineHtml, cfgClick, cfgChange, cfgSubmit, loadCfg, loadMine, type Deps } from './cfg';
@@ -90,6 +90,7 @@ function drawerHtml(): string {
        <button type="button" class="tool" data-act="d-sms" disabled title="Integração futura">SMS</button><button type="button" class="tool" data-act="d-move">Mover</button><button type="button" class="tool" data-act="d-copy">Copiar</button></div>
      <div class="card"><div class="line"><label for="d-date">Data</label><input id="d-date" type="date" data-k="date" value="${d.date}"></div>
        <div class="line"><label for="d-time">Hora</label><span class="stepper"><button type="button" class="btn icon" data-act="d-t" data-v="-10" aria-label="10 minutos antes">−</button><input id="d-time" type="time" step="600" data-k="time" value="${fmt(d.start)}"><button type="button" class="btn icon" data-act="d-t" data-v="10" aria-label="10 minutos depois">+</button></span></div>
+       <div class="slots">${slotsHtml(d.emp, d.date, d.svcs, store.dur(d.svcs, d.emp), d.id, d.start, 'd')}</div>
        <div class="line"><span>Repetir</span><span class="muted">Nunca</span></div></div>
      <div class="card"><div class="dcrow"><h4>Serviço</h4>${free.length ? `<button type="button" class="btn link" data-act="d-add">+ Adicionar serviço</button>` : ''}</div>
        ${d.adding ? `<div class="addlist">${free.map(s => `<button type="button" class="btn" data-act="d-addsvc" data-v="${s.id}">${esc(s.name)} · ${s.durationMin} min</button>`).join('')}</div>` : ''}
@@ -120,9 +121,10 @@ function modalHtml(): string {
     <div class="two"><div class="field"><label for="f-phone">Telefone</label><input id="f-phone" inputmode="tel" value="${esc(m.phone)}"></div><div class="field"><label for="f-email">E-mail</label><input id="f-email" type="email" value="${esc(m.email)}"></div></div>
     <div class="two"><div class="field"><label for="f-emp">Colaborador</label><select id="f-emp">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="field"><label for="f-date">Dia</label><input id="f-date" type="date" value="${m.date}"></div></div>
     <div class="field"><label for="f-time">Hora</label><input id="f-time" type="time" step="600" value="${fmt(m.start)}"></div>
+    <div class="slots" id="slots-m"></div>
     <div class="field"><label>Serviços</label><div class="checks">${SERVICES.map(s => `<label><input type="checkbox" name="svc" value="${s.id}" ${m.svcs.includes(s.id) ? 'checked' : ''}>${s.name} · ${s.durationMin} min</label>`).join('')}</div></div>
     <div class="acts"><button type="button" class="btn" data-act="m-no">Cancelar</button><button class="btn primary" type="submit">Criar marcação</button></div></form></div>`;
-  if (m.kind === 'resched') return `<div class="scrim"><form class="dlg" id="rf" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">Mover marcação</h2><div class="two"><div class="field"><label for="r-date">Dia</label><input id="r-date" type="date" value="${m.date}"></div><div class="field"><label for="r-time">Hora</label><input id="r-time" type="time" step="600" value="${fmt(m.start)}"></div></div><div class="field"><label for="r-emp">Colaborador</label><select id="r-emp">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="acts"><button type="button" class="btn" data-act="m-no">Voltar</button><button class="btn primary" type="submit">Mover</button></div></form></div>`;
+  if (m.kind === 'resched') return `<div class="scrim"><form class="dlg" id="rf" role="dialog" aria-modal="true" aria-labelledby="t"><h2 id="t">Mover marcação</h2><div class="two"><div class="field"><label for="r-date">Dia</label><input id="r-date" type="date" value="${m.date}"></div><div class="field"><label for="r-time">Hora</label><input id="r-time" type="time" step="600" value="${fmt(m.start)}"></div></div><div class="field"><label for="r-emp">Colaborador</label><select id="r-emp">${visibleEmps().map(e => `<option value="${e.id}" ${e.id === m.emp ? 'selected' : ''}>${e.name}</option>`).join('')}</select></div><div class="slots" id="slots-m"></div><div class="acts"><button type="button" class="btn" data-act="m-no">Voltar</button><button class="btn primary" type="submit">Mover</button></div></form></div>`;
   return '';
 }
 const confText = (c: Conflict) => { const o = c.kind === 'overlap' ? store.bookings.find(b => b.id === c.with) : undefined; return c.kind === 'overlap' ? `outra marcação (${esc(store.customer(o!.customerId).name)}, ${fmt(o!.startMin)})` : c.kind === 'blocked' ? 'um período indisponível do colaborador' : c.kind === 'outside_hours' ? 'horas fora do horário de funcionamento' : c.kind === 'service_not_offered' ? 'um serviço que o colaborador não faz' : 'uma reserva temporária'; };
@@ -134,6 +136,39 @@ type Modal = null
   | { kind: 'sale'; id: string }
   | { kind: 'new'; name: string; phone: string; email: string; emp: string; date: DateStr; start: number; svcs: string[] }
   | { kind: 'resched'; id: string; emp: string; date: DateStr; start: number };
+/** Horários livres de um barbeiro num dia para uma duração: aparecem ao lado do dia, para não haver tentativa e erro. */
+function freeSlots(emp: string, date: DateStr, svcs: string[], dur: number, ignoreId?: string): { slots: number[]; why?: string } {
+  const today = store.today();
+  if (!date || date < today) return { slots: [], why: 'Esse dia já passou.' };
+  if (live && date > addDays(today, 180)) return { slots: [], why: 'Dia demasiado longe para listar horários.' };
+  const hrs = store.hours[weekday(date)] ?? [];
+  if (!hrs.length) return { slots: [], why: 'A loja está fechada nesse dia.' };
+  const grid = store.rules?.gridMin ?? 10, out: number[] = []; let notOffered = false;
+  for (const h of hrs) for (let t = Math.ceil(h.open / grid) * grid; t + dur <= h.close; t += grid) {
+    if (localToEpochMs(date, t) < store.nowMs()) continue;
+    const cs = store.conflicts({ employeeId: emp, date, startMin: t, endMin: t + dur, serviceIds: svcs, ignoreBookingId: ignoreId });
+    if (cs.some(c => c.kind === 'service_not_offered')) notOffered = true;
+    if (!cs.length) out.push(t);
+  }
+  return { slots: out, why: out.length ? undefined : notOffered ? 'Este barbeiro não faz um dos serviços.' : 'Sem horários livres neste dia.' };
+}
+function slotsHtml(emp: string, date: DateStr, svcs: string[], dur: number, ignoreId: string | undefined, cur: number, scope: 'd' | 'm'): string {
+  const r = freeSlots(emp, date, svcs, dur, ignoreId);
+  const head = `<div class="slotsh">Horários livres · ${esc(empOf(emp).name)} · ${esc(dayLabel(date, false))}</div>`;
+  if (!r.slots.length) return `${head}<p class="muted">${esc(r.why ?? '')}</p>`;
+  return `${head}<div class="slotgrid">${r.slots.map(t => `<button type="button" class="slot${t === cur ? ' on' : ''}" data-act="slot" data-t="${t}" data-for="${scope}">${fmt(t)}</button>`).join('')}</div>`;
+}
+/** Nos diálogos (Mover, Nova marcação) os campos não redesenham a página: o quadro de horários atualiza-se a partir deles. */
+function fillSlots() {
+  const box = document.getElementById('slots-m'); const m = M; if (!box || !m) return;
+  const val = (id: string) => (document.getElementById(id) as HTMLInputElement | null)?.value ?? '';
+  const mins = (t: string) => { const [h, mm] = t.split(':').map(Number); return isNaN(h) ? -1 : h * 60 + mm; };
+  if (m.kind === 'resched') { const b = store.bookings.find(x => x.id === m.id); if (b) box.innerHTML = slotsHtml(val('r-emp'), val('r-date') as DateStr, b.serviceIds, b.endMin - b.startMin, b.id, mins(val('r-time')), 'm'); }
+  else if (m.kind === 'new') {
+    const svcs = [...document.querySelectorAll<HTMLInputElement>('#newf input[name=svc]:checked')].map(x => x.value);
+    box.innerHTML = svcs.length ? slotsHtml(val('f-emp'), val('f-date') as DateStr, svcs, store.dur(svcs, val('f-emp')), undefined, mins(val('f-time')), 'm') : '<p class="muted">Escolhe os serviços para ver os horários livres.</p>';
+  }
+}
 let M: Modal = null;
 
 function toast(t: string) { S.toast = t; render(); setTimeout(() => { if (S.toast === t) { S.toast = ''; render(); } }, 3200); }
@@ -172,6 +207,7 @@ function render() {
    <div class="stage">${main}</div>${live ? '' : `<div class="foot">Dados fictícios, guardados só neste ecrã. As regras vêm do motor real de marcações (@rr/domain). Nada é enviado a clientes.</div>`}${drawerHtml()}${modalHtml()}${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ''}`;
   const a = document.getElementById('agenda'); if (a) { a.scrollTop = st[0]; a.scrollLeft = st[1]; }
   const nd = document.querySelector<HTMLElement>('.db'); if (nd) nd.scrollTop = dst;
+  fillSlots();
   if (M) (document.querySelector('.dlg input, .dlg button.primary') as HTMLElement | null)?.focus();
   const tb = document.getElementById('themebtn'); if (tb) tb.textContent = 'Tema: ' + ({ system: 'sistema', light: 'claro', dark: 'escuro' } as const)[theme()];
 }
@@ -248,6 +284,7 @@ $app.addEventListener('click', e => {
   const st = t.closest<HTMLElement>('[data-step]'); if (st) { S.date = addDays(S.date, Number(st.dataset.step)); return render(); }
   const zm = t.closest<HTMLElement>('[data-zoom]'); if (zm) { S.zoom = Math.max(8, Math.min(32, S.zoom + Number(zm.dataset.zoom))); return render(); }
   const el = t.closest<HTMLElement>('[data-act]'); const act = el?.dataset.act; const val = el?.dataset.v;
+  if (act === 'slot') { const tt = Number(el!.dataset.t); if (el!.dataset.for === 'd' && D) { D.start = tt; return render(); } const inp = document.getElementById(M?.kind === 'resched' ? 'r-time' : 'f-time') as HTMLInputElement | null; if (inp) { inp.value = fmt(tt); fillSlots(); } return; }
   if (act === 'logout' && live) { live.logout().then(() => { S.auth = 'out'; S.loginErr = ''; render(); }); return; }
   if (act === 'today') { S.date = store.today(); return render(); }
   if (act === 'theme') { const n = ({ system: 'light', light: 'dark', dark: 'system' } as const)[theme()]; try { localStorage.setItem('rr-theme', n); } catch {} applyTheme(n); return render(); }
@@ -292,6 +329,7 @@ $app.addEventListener('change', e => { const t = e.target as HTMLSelectElement;
   if (t.id === 'role') { S.role = t.value; D = null; M = null; S.sel = null; S.bell = false; if (!isAdmin()) { S.emp = S.role; S.dashWho = S.role; } return render(); }
   if (t.id === 'dwho') { S.dashWho = t.value; return render(); }
   if (t.id === 'emp') { S.emp = t.value; return render(); } if (t.dataset.k) draftInput(e);
+  if (['r-date', 'r-emp', 'f-date', 'f-emp'].includes(t.id) || (M?.kind === 'new' && t.name === 'svc')) return fillSlots();
   if (t.id === 'f-name' && M?.kind === 'new') { const c = store.customerByName(t.value); if (c) { (document.getElementById('f-phone') as HTMLInputElement).value = c.phone; (document.getElementById('f-email') as HTMLInputElement).value = c.email; } } });
 $app.addEventListener('submit', e => {
   e.preventDefault(); const f = e.target as HTMLFormElement; const v = (id: string) => (document.getElementById(id) as HTMLInputElement).value;

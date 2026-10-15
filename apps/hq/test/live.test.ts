@@ -130,4 +130,21 @@ describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
     const tryLogin = async (pw: string) => (await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: 'bruno', password: pw }) })).status;
     expect(await tryLogin(PW)).toBe(401); expect(await tryLogin('a-nova-palavra-longa')).toBe(200);
   });
+  it('Nova marcação / Mover: ao escolher o dia aparecem os horários livres (ocupados e pausas ficam de fora)', async () => {
+    const p = await open(); await p.waitForSelector('#loginf'); await login(p, 'bruno', 'a-nova-palavra-longa'); await p.waitForSelector('.agenda');
+    await p.click('[data-act=new]'); await p.selectOption('#f-emp', 'andre'); await p.fill('#f-date', nextWed); await p.dispatchEvent('#f-date', 'change');
+    await p.waitForSelector('#slots-m .slot');
+    expect(await p.locator('#slots-m .slot:text-is("10:00")').count()).toBe(0); // o André tem o Rui Teste às 10:00
+    expect(await p.locator('#slots-m .slot:text-is("11:00")').count()).toBe(1);
+    const later = new Date(nextWed + 'T00:00:00Z'); later.setUTCDate(later.getUTCDate() + 21); const d2 = later.toISOString().slice(0, 10);
+    await p.selectOption('#f-emp', 'marcos'); await p.fill('#f-date', d2); await p.dispatchEvent('#f-date', 'change');
+    await p.waitForFunction(() => document.querySelector('#slots-m .slotsh')?.textContent?.includes('Marcos'));
+    expect(await p.locator('#slots-m .slot:text-is("13:00")').count()).toBe(0); // pausa de almoço do Marcos
+    expect(await p.locator('#slots-m .slot:text-is("12:00")').count()).toBe(1);
+    await p.click('#slots-m .slot:text-is("11:00")');
+    expect(await p.inputValue('#f-time')).toBe('11:00'); expect(await p.locator('#slots-m .slot.on').textContent()).toBe('11:00');
+    await shot(p, 'horarios-livres');
+    await p.selectOption('#f-emp', 'andre'); await p.fill('#f-date', '2000-01-03'); await p.dispatchEvent('#f-date', 'change');
+    expect(await p.textContent('#slots-m')).toContain('já passou');
+  });
 });
