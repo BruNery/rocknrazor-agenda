@@ -45,6 +45,7 @@ export function findConflicts(c: { employeeId: string; date: DateStr; startMin: 
   }
   for (const b of ctx.bookings) {
     if (b.employeeId !== c.employeeId || b.date !== c.date || b.status === 'cancelled' || b.id === c.ignoreBookingId) continue;
+    if (opts.online && (ctx.rules ?? DEFAULT_RULES).allowOnlineOverlap) continue; // regra do negócio: online pode sobrepor marcações (nunca bloqueios nem reservas)
     if (overlaps(c.startMin, c.endMin, b.startMin, b.endMin)) out.push({ kind: 'overlap', with: b.id });
   }
   for (const h of ctx.holds ?? []) {
@@ -64,7 +65,7 @@ export function computeAvailability(date: DateStr, serviceIds: string[], employe
   const hours = ctx.openingHours[weekday(date)] ?? [];
   const slots: Slot[] = [];
   const seen = new Set<number>();
-  for (const emp of pool.sort((a, b) => a.id.localeCompare(b.id))) {
+  for (const emp of pool.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || a.id.localeCompare(b.id))) {
     if (!offers(ctx, emp.id, serviceIds, true)) continue;
     const dur = totalDuration(serviceIds, emp.id, ctx);
     for (const h of hours) {
@@ -89,7 +90,10 @@ export function assignEmployee(date: DateStr, startMin: number, serviceIds: stri
     return offers(ctx, e.id, serviceIds, true) && findConflicts({ employeeId: e.id, date, startMin, endMin: end }, ctx, { online: true }).length === 0;
   });
   const load = (id: string) => ctx.bookings.filter(b => b.employeeId === id && b.date === date && b.status !== 'cancelled').length;
-  return cands.sort((a, b) => load(a.id) - load(b.id) || a.id.localeCompare(b.id))[0]?.id;
+  const order = (id: string) => ctx.employees.find(e => e.id === id)?.order ?? 0;
+  const byOrder = (a: Employee, b: Employee) => order(a.id) - order(b.id) || a.id.localeCompare(b.id);
+  const policy = (ctx.rules ?? DEFAULT_RULES).anyBarberPolicy;
+  return cands.sort((a, b) => (policy === 'first_in_order' ? 0 : load(a.id) - load(b.id)) || byOrder(a, b))[0]?.id;
 }
 
 /** Cancelar/reagendar online só até `cancelLeadMin` antes do início. */

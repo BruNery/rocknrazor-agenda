@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
 import { z } from 'zod';
 import type { Pool } from 'pg';
-import { BookingService, type Notifier } from './service';
+import { BookingService, loadRules, type Notifier } from './service';
+import { registerAdmin } from './admin';
 import type { StaffNotifier } from './push';
 import { barberMetrics, shopMetrics, revenueByDay, periodBefore, weekday, addDays, type Sale } from '@rr/domain';
 import { hashPassword, verifyPassword, DUMMY_HASH, createSession, userFromToken, sha, cookieToken, sessionCookie, clearCookie, MAX_FAILURES, FAILURE_WINDOW_MIN, type User } from './auth';
@@ -83,6 +84,21 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
     const id = Number((req.params as any).id); const r = await pool.query('update users set active = false where id = $1', [id]);
     if (!r.rowCount) return reply.code(404).send({ ok: false, error: 'nao_encontrado' });
     await pool.query('delete from sessions where user_id = $1', [id]); return { ok: true };
+  });
+
+  registerAdmin(app, pool, needAdmin);
+
+  // Catálogo público para o Booking: só ativos, tudo o que o HQ gere.
+  app.get('/public/catalog', async () => {
+    const [e, s, r] = await Promise.all([
+      pool.query("select id, name, nickname, specialties from employees where active and available_online order by sort_order, id"),
+      pool.query("select id, name, duration_min, price_cents, points_price from services where active order by sort_order, id"),
+      loadRules(pool)]);
+    const es = await pool.query('select employee_id, service_id, duration_min from employee_services where online_available and calendar_available');
+    return { ok: true, rules: { maxWeeksAhead: r.maxWeeksAhead, holdMin: r.holdMin, cancelLeadMin: r.cancelLeadMin, gridMin: r.gridMin },
+      employees: e.rows.map(x => ({ id: x.id, name: x.name, nickname: x.nickname, specialties: x.specialties })),
+      services: s.rows.map(x => ({ id: x.id, name: x.name, durationMin: x.duration_min, priceCents: x.price_cents, pointsPrice: x.points_price })),
+      offers: es.rows.map(x => ({ employeeId: x.employee_id, serviceId: x.service_id, durationMin: x.duration_min })) };
   });
 
   // ---------- HQ (protegido) ----------

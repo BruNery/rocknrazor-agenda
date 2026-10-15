@@ -1,18 +1,24 @@
 import type { Pool, PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { fmtWhen, type StaffNotifier } from './push';
-import { DEFAULT_RULES, canCancelOrReschedule, computeAvailability, findConflicts, assignEmployee, totalDuration, type Conflict, type Ctx, type DateStr } from '@rr/domain';
+import { canCancelOrReschedule, todayLocal, type OnlineRules, computeAvailability, findConflicts, assignEmployee, totalDuration, type Conflict, type Ctx, type DateStr } from '@rr/domain';
 
 export interface Notifier { send(kind: 'created' | 'cancelled' | 'rescheduled', bookingId: string): Promise<void> }
 export class FakeNotifier implements Notifier { sent: { kind: string; bookingId: string }[] = []; async send(kind: any, bookingId: string) { this.sent.push({ kind, bookingId }); } }
 
-export const HOLD_MS = 5 * 60_000;
 export type Result<T> = ({ ok: true } & T) | { ok: false; error: string; conflicts?: Conflict[] };
+
+export function rulesFromRow(r: any): OnlineRules {
+  return { gridMin: r.grid_min, maxWeeksAhead: r.max_weeks_ahead, lastBookingLeadMin: r.last_booking_lead_min, cancelLeadMin: r.cancel_lead_min, holdMin: r.hold_min, maxOpenOnline: r.max_open_online, allowOnlineOverlap: r.allow_online_overlap, anyBarberPolicy: r.any_barber_policy };
+}
+export async function loadRules(db: Pick<Pool, 'query'>): Promise<OnlineRules> { return rulesFromRow((await db.query('select * from shop_settings where id = 1')).rows[0]); }
 
 async function loadCtx(db: PoolClient, date: DateStr, nowMs: number): Promise<Ctx> {
   // Um cliente pg só executa uma consulta de cada vez: sequencial.
-  const emp = await db.query('select id, available_online, auto_assign from employees');
-  const svc = await db.query('select id, duration_min, pause_min from services');
+  const st = (await db.query('select * from shop_settings where id = 1')).rows[0];
+  const rules = rulesFromRow(st);
+  const emp = await db.query('select id, available_online, auto_assign, sort_order from employees where active');
+  const svc = await db.query('select id, duration_min, pause_min from services');  // inclui inativos: marcações antigas continuam a calcular
   const es = await db.query('select employee_id, service_id, online_available, calendar_available, duration_min from employee_services');
   const oh = await db.query('select weekday, open_min, close_min from opening_hours');
   const bl = await db.query("select id, employee_id, to_char(date,'YYYY-MM-DD') d, all_day, start_min, end_min from blocks where date = $1", [date]);
@@ -21,8 +27,8 @@ async function loadCtx(db: PoolClient, date: DateStr, nowMs: number): Promise<Ct
   const openingHours: Ctx['openingHours'] = {};
   for (const r of oh.rows) (openingHours[r.weekday] ??= []).push({ open: r.open_min, close: r.close_min });
   return {
-    nowMs, openingHours, rules: DEFAULT_RULES,
-    employees: emp.rows.map(r => ({ id: r.id, availableOnline: r.available_online, autoAssign: r.auto_assign })),
+    nowMs, openingHours, rules,
+    employees: emp.rows.map(r => ({ id: r.id, availableOnline: r.available_online, autoAssign: r.auto_assign, order: r.sort_order })),
     services: svc.rows.map(r => ({ id: r.id, durationMin: r.duration_min, pauseMin: r.pause_min })),
     employeeServices: es.rows.map(r => ({ employeeId: r.employee_id, serviceId: r.service_id, onlineAvailable: r.online_available, calendarAvailable: r.calendar_available, durationMin: r.duration_min ?? undefined })),
     blocks: bl.rows.map(r => ({ id: r.id, employeeId: r.employee_id, date: r.d, allDay: r.all_day, startMin: r.start_min ?? undefined, endMin: r.end_min ?? undefined })),
@@ -60,19 +66,26 @@ export class BookingService {
     } catch { /* aviso é best-effort */ }
   }
 
-  availability(date: DateStr, serviceIds: string[], employeeId: string | undefined, nowMs: number) {
+  /** Serviços desativados no HQ deixam de poder ser marcados online. */
+  private async allActive(serviceIds: string[]) {
+    const r = await this.pool.query('select count(*)::int n from services where id = any($1) and active', [serviceIds]); return r.rows[0].n === new Set(serviceIds).size;
+  }
+
+  async availability(date: DateStr, serviceIds: string[], employeeId: string | undefined, nowMs: number) {
+    if (!(await this.allActive(serviceIds))) return [];
     return tx(this.pool, async c => computeAvailability(date, serviceIds, employeeId, await loadCtx(c, date, nowMs)));
   }
 
-  /** Reserva temporária de 5 min para o horário escolhido no Booking. */
-  hold(a: { date: DateStr; startMin: number; serviceIds: string[]; employeeId?: string; nowMs: number }): Promise<Result<{ holdId: string; employeeId: string; expiresAtMs: number }>> {
+  /** Reserva temporária (duração definida no HQ) para o horário escolhido no Booking. */
+  async hold(a: { date: DateStr; startMin: number; serviceIds: string[]; employeeId?: string; nowMs: number }): Promise<Result<{ holdId: string; employeeId: string; expiresAtMs: number }>> {
+    if (!(await this.allActive(a.serviceIds))) return { ok: false, error: 'indisponivel' };
     return tx(this.pool, async c => {
       await lockEmployees(c);
       const ctx = await loadCtx(c, a.date, a.nowMs);
       const emp = a.employeeId ?? assignEmployee(a.date, a.startMin, a.serviceIds, ctx);
       if (!emp) return { ok: false as const, error: 'sem_disponibilidade' };
       if (!computeAvailability(a.date, a.serviceIds, emp, ctx).some(s => s.startMin === a.startMin)) return { ok: false as const, error: 'indisponivel' };
-      const id = randomUUID(), end = a.startMin + totalDuration(a.serviceIds, emp, ctx), exp = a.nowMs + HOLD_MS;
+      const id = randomUUID(), end = a.startMin + totalDuration(a.serviceIds, emp, ctx), exp = a.nowMs + ctx.rules!.holdMin * 60_000;
       await c.query('insert into holds(id, employee_id, date, start_min, end_min, expires_at) values ($1,$2,$3,$4,$5,to_timestamp($6/1000.0))', [id, emp, a.date, a.startMin, end, exp]);
       return { ok: true as const, holdId: id, employeeId: emp, expiresAtMs: exp };
     });
@@ -81,12 +94,18 @@ export class BookingService {
   /** Reserva online. Nunca sobrepõe. Se houver `holdId` próprio, é libertada e substituída pela marcação. */
   async createOnline(a: { customer: { name: string; phone: string }; date: DateStr; startMin: number; serviceIds: string[]; employeeId?: string; holdId?: string; nowMs: number }): Promise<Result<{ bookingId: string; employeeId: string }>> {
     if (!a.customer.name?.trim() || !a.customer.phone?.trim()) return { ok: false, error: 'nome_e_telefone_obrigatorios' };
+    if (!(await this.allActive(a.serviceIds))) return { ok: false, error: 'indisponivel' };
     const res = await tx(this.pool, async c => {
       await lockEmployees(c); // simples e seguro com poucos colaboradores; refinar se crescer
       if (a.holdId) await c.query('delete from holds where id = $1', [a.holdId]);
       const ctx = await loadCtx(c, a.date, a.nowMs);
       const emp = a.employeeId ?? assignEmployee(a.date, a.startMin, a.serviceIds, ctx);
       if (!emp || !computeAvailability(a.date, a.serviceIds, emp, ctx).some(s => s.startMin === a.startMin)) return { ok: false as const, error: 'indisponivel' };
+      const cap = ctx.rules!.maxOpenOnline;
+      if (cap > 0) {
+        const open = await c.query("select count(*)::int n from bookings b join customers cu on cu.id = b.customer_id where cu.phone = $1 and b.source = 'online' and b.status = 'confirmed' and b.date >= $2", [a.customer.phone.trim(), todayLocal(a.nowMs)]);
+        if (open.rows[0].n >= cap) return { ok: false as const, error: 'limite_marcacoes_abertas' };
+      }
       const cust = await c.query('insert into customers(name, phone) values ($1,$2) returning id', [a.customer.name.trim(), a.customer.phone.trim()]);
       const id = randomUUID(), end = a.startMin + totalDuration(a.serviceIds, emp, ctx);
       await c.query("insert into bookings(id, employee_id, customer_id, date, start_min, end_min, service_ids, source) values ($1,$2,$3,$4,$5,$6,$7,'online')", [id, emp, cust.rows[0].id, a.date, a.startMin, end, a.serviceIds]);
@@ -120,7 +139,7 @@ export class BookingService {
       const b = r.rows[0];
       if (!b) return { ok: false as const, error: 'nao_encontrada' };
       if (b.status === 'cancelled') return { ok: false as const, error: 'ja_cancelada' };
-      if (a.by === 'customer' && !canCancelOrReschedule({ date: b.d, startMin: b.start_min }, a.nowMs)) return { ok: false as const, error: 'fora_do_prazo' };
+      if (a.by === 'customer' && !canCancelOrReschedule({ date: b.d, startMin: b.start_min }, a.nowMs, await loadRules(c))) return { ok: false as const, error: 'fora_do_prazo' };
       await c.query("update bookings set status = 'cancelled' where id = $1", [a.bookingId]);
       await audit(c, a.actor, 'cancelar', a.bookingId, { status: b.status }, { status: 'cancelled' }, a.notify);
       return { ok: true as const };
@@ -136,7 +155,7 @@ export class BookingService {
       const r = await c.query("select employee_id, to_char(date,'YYYY-MM-DD') d, start_min, end_min, service_ids, status from bookings where id = $1 for update", [a.bookingId]);
       const b = r.rows[0];
       if (!b || b.status === 'cancelled') return { ok: false as const, error: 'nao_encontrada' };
-      if (a.by === 'customer' && !canCancelOrReschedule({ date: b.d, startMin: b.start_min }, a.nowMs)) return { ok: false as const, error: 'fora_do_prazo' };
+      if (a.by === 'customer' && !canCancelOrReschedule({ date: b.d, startMin: b.start_min }, a.nowMs, await loadRules(c))) return { ok: false as const, error: 'fora_do_prazo' };
       const ctx = await loadCtx(c, a.date, a.nowMs);
       const end = a.startMin + (b.end_min - b.start_min);
       const conflicts = findConflicts({ employeeId: b.employee_id, date: a.date, startMin: a.startMin, endMin: end, ignoreBookingId: a.bookingId }, ctx, { online: a.by === 'customer' });
