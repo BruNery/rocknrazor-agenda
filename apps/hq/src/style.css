@@ -189,3 +189,16 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .bk-warn { background: var(--surface); border: 1px solid var(--danger); border-radius: 12px; padding: 14px; } .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .bk-foot { text-align: center; color: var(--muted); font-size: 12px; padding: 12px 0 90px; } .bk-foot a { color: var(--accent-text); }
 .pushnote { margin: 8px 0 12px; }
+.blk.s-outro { background: var(--svc-outro); }
+/* Login e áreas de gestão */
+.login { display: grid; place-items: center; min-height: 100dvh; padding: 16px; }
+.login .card { width: min(380px, 100%); padding: 24px; } .login .brand { font-family: var(--font-display); font-size: 22px; margin-bottom: 16px; } .login .brand small { display: block; font-family: var(--font-body); font-size: 11px; letter-spacing: .2em; color: var(--muted); }
+.login input { border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 10px; width: 100%; font: inherit; color: inherit; } .err { color: var(--danger); margin: 0 0 12px; }
+.cfg { flex: 1; overflow: auto; padding: 16px; max-width: 920px; margin: 0 auto; width: 100%; } .cfg h2 { margin: 0 0 12px; } .cfg h3 { margin: 0 0 8px; font-size: 16px; } .cfg h4 { margin: 16px 0 8px; }
+.cfgtabs { flex-wrap: wrap; margin-bottom: 14px; } .cfg .acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+.cfg .card.off { opacity: .6; } .cfg .chk { display: inline-flex; align-items: center; gap: 8px; margin: 4px 16px 4px 0; } .cfg .chk input { width: auto; }
+.cfg .field input, .cfg .field select { border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 8px 10px; width: 100%; font: inherit; color: inherit; }
+.cfg details { margin-top: 10px; } .cfg summary { cursor: pointer; font-weight: 600; padding: 6px 0; } .cfg .offer { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; } .cfg .offer input[type=number] { width: 84px; }
+.cfg .plist { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; } .cfg .plist li { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.cfg .log { padding-left: 18px; } .who.muted { padding: 0 6px; }
+@media (max-width: 640px) { .cfg .two { grid-template-columns: 1fr; } .top { flex-wrap: wrap; } }

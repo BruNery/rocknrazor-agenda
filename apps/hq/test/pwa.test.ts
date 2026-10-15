@@ -89,6 +89,7 @@ describe('Botão "Ativar avisos neste telemóvel"', () => {
       PushManager.prototype.getSubscription = async () => current;
     }, { api: opts.api });
     await page.route('**/push/**', r => { const u = new URL(r.request().url()); calls.push({ url: u.pathname, body: r.request().postDataJSON?.() }); r.fulfill({ contentType: 'application/json', body: u.pathname === '/push/key' ? JSON.stringify({ ok: true, key: 'BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A' }) : '{"ok":true}' }); });
+    await page.route('**/hq/**', r => { const p = new URL(r.request().url()).pathname; const j = p === '/hq/catalog' ? { ok: true, me: { username: 'admin', role: 'admin', employeeId: null }, rules: { gridMin: 10, maxWeeksAhead: 8, lastBookingLeadMin: 60, cancelLeadMin: 180, holdMin: 5, maxOpenOnline: 3, allowOnlineOverlap: false, anyBarberPolicy: 'fewest_bookings' }, employees: [], services: [], products: [], hours: [], offers: [], pauses: [] } : { ok: true, bookings: [], blocks: [], sales: [] }; r.fulfill({ contentType: 'application/json', body: JSON.stringify(j) }); });
     await page.goto(base + '/'); await page.click('[data-act=bell]'); return { ctx, page, calls };
   }
   it('na demonstração (sem servidor) só explica que os avisos são simulados', async () => {
@@ -110,6 +111,7 @@ describe('Botão "Ativar avisos neste telemóvel"', () => {
   it('permissão recusada: mostra como desbloquear, sem insistir', async () => {
     const ctx = await browser.newContext({ permissions: [], viewport: { width: 1200, height: 800 } }); const page = await ctx.newPage();
     await page.addInitScript(() => { (window as any).RR_API = ''; Object.defineProperty(Notification, 'permission', { get: () => 'denied' }); });
+    await page.route('**/hq/**', r => { const p = new URL(r.request().url()).pathname; const j = p === '/hq/catalog' ? { ok: true, me: { username: 'admin', role: 'admin', employeeId: null }, rules: { gridMin: 10, maxWeeksAhead: 8, lastBookingLeadMin: 60, cancelLeadMin: 180, holdMin: 5, maxOpenOnline: 3, allowOnlineOverlap: false, anyBarberPolicy: 'fewest_bookings' }, employees: [], services: [], products: [], hours: [], offers: [], pauses: [] } : { ok: true, bookings: [], blocks: [], sales: [] }; r.fulfill({ contentType: 'application/json', body: JSON.stringify(j) }); });
     await page.goto(base + '/'); await page.click('[data-act=bell]'); await page.waitForSelector('.bellp:has-text("bloqueados")'); await ctx.close();
   });
 });

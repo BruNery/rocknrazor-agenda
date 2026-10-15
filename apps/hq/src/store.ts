@@ -2,18 +2,26 @@ import { findConflicts, totalDuration, addDays, todayLocal, weekday, computeAvai
 
 export interface Customer { id: string; name: string; cc: string; phone: string; email: string; notes: string }
 export interface B extends Booking { saleId?: string; customerId: string; notes: string; serviceIds: string[]; source: 'online' | 'hq'; token?: string; createdAt: number; log: { at: number; text: string }[] }
-export const EMPLOYEES = [
+export interface Emp { id: string; name: string; nick: string; specialties?: string; availableOnline?: boolean; autoAssign?: boolean }
+export interface Svc { id: string; name: string; durationMin: number; price: number; cls: string; pauseMin?: number; pointsPrice?: number | null }
+export interface Prod { id: string; name: string; price: number; stock?: number | null }
+/** Listas vivas: na demonstração são estes exemplos; na app real o servidor substitui o conteúdo (ver live.ts). */
+export const EMPLOYEES: Emp[] = [
   { id: 'andre', name: 'André', nick: 'Link' }, { id: 'marcos', name: 'Marcos', nick: 'Gringo' },
   { id: 'margarida', name: 'Margarida', nick: 'Mags' }, { id: 'emanuel', name: 'Emanuel', nick: 'Tito' },
 ];
 /** Preços de exemplo (só o do Corte Premium foi visto no Noona). */
-export const SERVICES = [
+export const SERVICES: Svc[] = [
   { id: 'corte', name: 'Corte Premium', durationMin: 40, price: 17, cls: 's-corte' },
   { id: 'trim', name: "Rockstar Trim n' Shave", durationMin: 60, price: 25, cls: 's-trim' },
   { id: 'barba', name: 'Barba', durationMin: 20, price: 8, cls: 's-barba' },
 ];
 /** Preços de exemplo. */
-export const PRODUCTS = [{ id: 'pomada', name: 'Pomada modeladora', price: 15 }, { id: 'oleo', name: 'Óleo de barba', price: 12 }, { id: 'shampoo', name: 'Shampoo', price: 10 }];
+export const PRODUCTS: Prod[] = [{ id: 'pomada', name: 'Pomada modeladora', price: 15 }, { id: 'oleo', name: 'Óleo de barba', price: 12 }, { id: 'shampoo', name: 'Shampoo', price: 10 }];
+/** Desativados no HQ: já não se marcam, mas as marcações antigas continuam a mostrar o nome certo. */
+export const ARCHIVED_EMPLOYEES: Emp[] = []; export const ARCHIVED_SERVICES: Svc[] = [];
+export const empOf = (id: string): Emp => EMPLOYEES.find(e => e.id === id) ?? ARCHIVED_EMPLOYEES.find(e => e.id === id) ?? { id, name: id, nick: '' };
+export const svcOf = (id: string): Svc => SERVICES.find(s => s.id === id) ?? ARCHIVED_SERVICES.find(s => s.id === id) ?? { id, name: id, durationMin: 0, price: 0, cls: 's-outro' };
 export const PAYMENTS = [{ id: 'cartao', name: 'Cartão' }, { id: 'dinheiro', name: 'Dinheiro' }, { id: 'mbway', name: 'MB WAY' }, { id: 'outro', name: 'Outro' }] as const;
 export interface Note { at: number; employeeId: string; text: string; read: boolean }
 export const STATUSES = [{ id: 'confirmed', name: 'Confirmada' }, { id: 'noshow', name: 'Não compareceu' }, { id: 'cancelled', name: 'Cancelada' }] as const;
@@ -23,11 +31,13 @@ export const digits = (s: string) => s.replace(/\D/g, '');
 const newToken = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), x => x.toString(16).padStart(2, '0')).join('');
 export type OnlineError = 'dados_invalidos' | 'sem_consentimento' | 'indisponivel' | 'limite_marcacoes' | 'fora_do_prazo' | 'nao_encontrada' | 'ja_cancelada';
 export const COUNTRY_CODES = ['+351', '+55', '+34', '+33', '+44', '+49'];
-const hours = Object.fromEntries([1, 2, 3, 4, 5, 6].map(d => [d, [{ open: 540, close: 1140 }]]));
+const demoHours = Object.fromEntries([1, 2, 3, 4, 5, 6].map(d => [d, [{ open: 540, close: 1140 }]]));
 
 export class Store {
   bookings: B[] = []; blocks: Block[] = []; holds: (Hold & { id: string })[] = []; customers: Customer[] = []; sales: Sale[] = []; notes: Note[] = []; private n = 100; private c = 1;
-  constructor(public nowMs: () => number = Date.now) { this.seed(); this.seedHistory(); }
+  hours: Ctx['openingHours'] = demoHours; rules?: Ctx['rules']; offers?: Ctx['employeeServices'];
+  /** `demo: false` = app real: começa vazia e é preenchida pelo servidor. */
+  constructor(public nowMs: () => number = Date.now, opts: { demo?: boolean } = {}) { if (opts.demo !== false) { this.seed(); this.seedHistory(); } }
   private notify(employeeId: string, text: string) { this.notes.unshift({ at: this.nowMs(), employeeId, text, read: false }); }
   today(): DateStr { return todayLocal(this.nowMs()); }
   private seed() {
@@ -83,10 +93,10 @@ export class Store {
   previousVisits(b: B) { return this.bookings.filter(x => x.customerId === b.customerId && x.id !== b.id && x.status !== 'cancelled' && (x.date < b.date || (x.date === b.date && x.startMin < b.startMin))).sort((a, c) => (c.date + fmt(c.startMin)).localeCompare(a.date + fmt(a.startMin))); }
   dur(ids: string[], emp: string) { return totalDuration(ids, emp, this.ctx()); }
   ctx(): Ctx {
-    return { openingHours: hours, nowMs: this.nowMs(), blocks: this.blocks, bookings: this.bookings, holds: this.holds,
-      services: SERVICES.map(s => ({ id: s.id, durationMin: s.durationMin })),
-      employees: EMPLOYEES.map(e => ({ id: e.id, availableOnline: true, autoAssign: true })),
-      employeeServices: EMPLOYEES.flatMap(e => SERVICES.map(s => ({ employeeId: e.id, serviceId: s.id, onlineAvailable: true, calendarAvailable: true }))) };
+    return { openingHours: this.hours, rules: this.rules, nowMs: this.nowMs(), blocks: this.blocks, bookings: this.bookings, holds: this.holds,
+      services: SERVICES.map(s => ({ id: s.id, durationMin: s.durationMin, pauseMin: s.pauseMin })),
+      employees: EMPLOYEES.map((e, i) => ({ id: e.id, availableOnline: e.availableOnline ?? true, autoAssign: e.autoAssign ?? true, order: i })),
+      employeeServices: this.offers ?? EMPLOYEES.flatMap(e => SERVICES.map(s => ({ employeeId: e.id, serviceId: s.id, onlineAvailable: true, calendarAvailable: true }))) };
   }
   conflicts(c: { employeeId: string; date: DateStr; startMin: number; endMin: number; serviceIds?: string[]; ignoreBookingId?: string }): Conflict[] { return findConflicts(c, this.ctx()); }
 
