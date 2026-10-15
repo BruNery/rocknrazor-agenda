@@ -39,6 +39,7 @@ async function login(page: Page, user: string, pw: string) { await page.fill('#l
 /** Espera por um aviso NOVO (apaga primeiro o anterior, que fica 3 s no ecrã). */
 const clearToast = (page: Page) => page.evaluate(() => { (window as any).__rr.S.toast = ''; document.querySelector('.toast')?.remove(); });
 const toast = (page: Page, text: string) => page.waitForSelector(`.toast:has-text("${text}")`);
+const shot = async (page: Page, name: string) => { if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${name}.png` }); };
 const act = async (page: Page, sel: string, text: string) => { await clearToast(page); await page.click(sel); await toast(page, text); };
 
 describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
@@ -75,7 +76,7 @@ describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
     expect((await pool.query('select hold_min, cancel_lead_min, any_barber_policy, allow_online_overlap from shop_settings')).rows[0]).toEqual({ hold_min: 7, cancel_lead_min: 120, any_barber_policy: 'first_in_order', allow_online_overlap: true });
   });
   it('Definições › Equipa: adicionar barbeiro, criar-lhe o acesso e desativar', async () => {
-    await admin.click('[data-cfg=tab][data-v=equipa]');
+    await shot(admin, 'regras'); await admin.click('[data-cfg=tab][data-v=equipa]');
     await admin.fill('form[data-cfg=emp-new] input[name=name]', 'Eduardo'); await admin.fill('form[data-cfg=emp-new] input[name=nick]', 'Aquaman'); await act(admin, 'form[data-cfg=emp-new] button[type=submit]', 'Barbeiro adicionado');
     expect((await pool.query("select name, nickname from employees where id='eduardo'")).rows).toEqual([{ name: 'Eduardo', nickname: 'Aquaman' }]);
     await admin.locator('section.card', { hasText: 'Marcos' }).locator('summary:has-text("Acesso")').click();
@@ -85,9 +86,9 @@ describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
     expect((await pool.query("select active from employees where id='eduardo'")).rows[0].active).toBe(false);
   });
   it('Definições › Pontos: procurar o cliente e somar pontos com motivo; retirar mais do que o saldo é recusado', async () => {
-    await admin.click('[data-cfg=tab][data-v=pontos]'); await admin.fill('form[data-cfg=pts-search] input[name=q]', 'Rui'); await admin.click('form[data-cfg=pts-search] button[type=submit]');
+    await shot(admin, 'equipa'); await admin.click('[data-cfg=tab][data-v=pontos]'); await admin.fill('form[data-cfg=pts-search] input[name=q]', 'Rui'); await admin.click('form[data-cfg=pts-search] button[type=submit]');
     await admin.click('[data-cfg=pts-pick]'); await admin.fill('form[data-cfg=pts-adjust] input[name=n]', '50'); await admin.fill('form[data-cfg=pts-adjust] input[name=note]', 'Oferta de boas-vindas'); await act(admin, 'form[data-cfg=pts-adjust] button[type=submit]', 'Pontos atualizados');
-    expect(await admin.textContent('.cfg')).toMatch(/50 pontos/); expect(await admin.textContent('.cfg')).toMatch(/RNR-[A-Z2-9]{6}/);
+    await shot(admin, 'pontos'); expect(await admin.textContent('.cfg')).toMatch(/50 pontos/); expect(await admin.textContent('.cfg')).toMatch(/RNR-[A-Z2-9]{6}/);
     await admin.selectOption('form[data-cfg=pts-adjust] select[name=dir]', '-1'); await admin.fill('form[data-cfg=pts-adjust] input[name=n]', '80'); await admin.fill('form[data-cfg=pts-adjust] input[name=note]', 'Correção'); await act(admin, 'form[data-cfg=pts-adjust] button[type=submit]', 'não pode ficar negativo');
     expect((await pool.query('select coalesce(sum(delta),0)::int n from points_ledger')).rows[0].n).toBe(50);
   });
