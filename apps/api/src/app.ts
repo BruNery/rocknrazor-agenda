@@ -110,21 +110,84 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
 
   app.get('/hq/bookings', async (req, reply) => {
     const u = await need(req, reply); if (!u) return;
-    const q = z.object({ date, employeeId: z.string().optional() }).parse(req.query);
+    const q = z.object({ date: date.optional(), from: date.optional(), to: date.optional(), employeeId: z.string().optional() }).parse(req.query);
+    const from = q.from ?? q.date, to = q.to ?? q.date; if (!from || !to || from > to || addDays(from, 400) < to) return reply.code(400).send({ ok: false, error: 'pedido_invalido' });
     if (u.role === 'barber' && q.employeeId && q.employeeId !== u.employeeId) return forbidden(reply);
     const emp = u.role === 'barber' ? u.employeeId : q.employeeId ?? null;
-    const r = await pool.query(`select b.id, b.employee_id, to_char(b.date,'YYYY-MM-DD') date, b.start_min, b.end_min, b.service_ids, b.source, b.status, c.name customer_name, c.phone customer_phone, c.email customer_email
-      from bookings b left join customers c on c.id = b.customer_id where b.date = $1 and ($2::text is null or b.employee_id = $2) order by b.start_min`, [q.date, emp]);
-    return { ok: true, bookings: r.rows.map(x => ({ id: x.id, employeeId: x.employee_id, date: x.date, startMin: x.start_min, endMin: x.end_min, serviceIds: x.service_ids, source: x.source, status: x.status, customer: x.customer_name ? { name: x.customer_name, phone: x.customer_phone, email: x.customer_email } : null })) };
+    const r = await pool.query(`select b.id, b.employee_id, to_char(b.date,'YYYY-MM-DD') date, b.start_min, b.end_min, b.service_ids, b.source, b.status, b.notes, extract(epoch from b.created_at)*1000 created_ms,
+        c.id customer_id, c.name customer_name, c.phone customer_phone, c.email customer_email, c.notes customer_notes, c.member_code, s.id sale_id
+      from bookings b left join customers c on c.id = b.customer_id left join sales s on s.booking_id = b.id where b.date between $1 and $2 and ($3::text is null or b.employee_id = $3) order by b.date, b.start_min`, [from, to, emp]);
+    return { ok: true, bookings: r.rows.map(x => ({ id: x.id, employeeId: x.employee_id, date: x.date, startMin: x.start_min, endMin: x.end_min, serviceIds: x.service_ids, source: x.source, status: x.status, notes: x.notes, createdAt: Number(x.created_ms), saleId: x.sale_id ? Number(x.sale_id) : null,
+      customer: x.customer_id ? { id: Number(x.customer_id), name: x.customer_name, phone: x.customer_phone, email: x.customer_email ?? '', notes: x.customer_notes, memberCode: x.member_code } : null })) };
+  });
+  /** Tudo o que o ecrã do HQ precisa de conhecer (barbeiros, serviços, produtos, horário, regras), para qualquer utilizador com sessão. */
+  app.get('/hq/catalog', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    const [e, sv, pr, oh, es, pa] = await Promise.all([
+      pool.query('select id, name, nickname, specialties, active, available_online, auto_assign, sort_order from employees order by sort_order, id'),
+      pool.query('select id, name, duration_min, pause_min, price_cents, active, points_price from services order by sort_order, id'),
+      pool.query('select id, name, price_cents, stock, active, points_price from products order by sort_order, id'),
+      pool.query('select weekday, open_min, close_min from opening_hours order by weekday, open_min'),
+      pool.query('select employee_id, service_id, online_available, calendar_available, duration_min from employee_services'),
+      pool.query('select employee_id, weekday, start_min, end_min, label from employee_pauses order by weekday, start_min')]);
+    return { ok: true, me: { username: u.username, role: u.role, employeeId: u.employeeId }, rules: await loadRules(pool),
+      employees: e.rows.map(x => ({ id: x.id, name: x.name, nickname: x.nickname, specialties: x.specialties, active: x.active, availableOnline: x.available_online, autoAssign: x.auto_assign, order: x.sort_order })),
+      services: sv.rows.map(x => ({ id: x.id, name: x.name, durationMin: x.duration_min, pauseMin: x.pause_min, priceCents: x.price_cents, active: x.active, pointsPrice: x.points_price })),
+      products: pr.rows.map(x => ({ id: x.id, name: x.name, priceCents: x.price_cents, stock: x.stock, active: x.active, pointsPrice: x.points_price })),
+      hours: oh.rows.map(x => ({ weekday: x.weekday, openMin: x.open_min, closeMin: x.close_min })),
+      offers: es.rows.map(x => ({ employeeId: x.employee_id, serviceId: x.service_id, onlineAvailable: x.online_available, calendarAvailable: x.calendar_available, durationMin: x.duration_min })),
+      pauses: pa.rows.filter(x => u.role === 'admin' || x.employee_id === u.employeeId).map(x => ({ employeeId: x.employee_id, weekday: x.weekday, startMin: x.start_min, endMin: x.end_min, label: x.label })) };
+  });
+  /** Bloqueios do período (barbeiro: só os seus). Servem para desenhar a agenda. */
+  app.get('/hq/blocks', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return; const q = z.object({ from: date, to: date }).parse(req.query);
+    const r = await pool.query("select id, employee_id, to_char(date,'YYYY-MM-DD') d, all_day, start_min, end_min, reason from blocks where date between $1 and $2 and ($3::text is null or employee_id = $3)", [q.from, q.to, u.role === 'barber' ? u.employeeId : null]);
+    return { ok: true, blocks: r.rows.map(x => ({ id: x.id, employeeId: x.employee_id, date: x.d, allDay: x.all_day, startMin: x.start_min, endMin: x.end_min, reason: x.reason })) };
+  });
+  /** Atendimentos registados no período (para os dashboards agregados). Barbeiro: só os seus. */
+  app.get('/hq/sales', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return; const q = z.object({ from: date, to: date }).parse(req.query);
+    const r = await pool.query(`select s.id, s.booking_id, s.employee_id, coalesce(s.customer_id::text, 'b:' || s.booking_id) customer_id, to_char(s.date,'YYYY-MM-DD') d, s.payment,
+        coalesce(json_agg(json_build_object('kind', i.kind, 'refId', i.ref_id, 'name', i.name, 'qty', i.qty, 'unitCents', i.unit_cents)) filter (where i.id is not null), '[]') items
+      from sales s left join sale_items i on i.sale_id = s.id where s.date between $1 and $2 and ($3::text is null or s.employee_id = $3) group by s.id`, [q.from, q.to, u.role === 'barber' ? u.employeeId : null]);
+    return { ok: true, sales: r.rows.map(x => ({ id: String(x.id), bookingId: x.booking_id, employeeId: x.employee_id, customerId: String(x.customer_id), date: x.d, items: x.items, payment: x.payment })) };
+  });
+  /** Atualiza os dados de um cliente (barbeiro: só clientes que já atendeu). */
+  app.patch('/hq/customers/:id', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return; const cid = Number((req.params as any).id);
+    const b = z.object({ name: z.string().trim().min(1).max(120).optional(), phone: z.string().trim().min(5).max(30).optional(), email: z.string().trim().max(160).optional(), notes: z.string().max(2000).optional() }).parse(req.body);
+    if (u.role === 'barber') { const k = await pool.query('select 1 from bookings where customer_id = $1 and employee_id = $2 limit 1', [cid, u.employeeId]); if (!k.rowCount) return notFound(reply); }
+    const r = await pool.query('update customers set name = coalesce($2, name), phone = coalesce($3, phone), email = case when $4::boolean then nullif($5, \'\') else email end, notes = coalesce($6, notes) where id = $1', [cid, b.name ?? null, b.phone ?? null, b.email !== undefined, b.email ?? null, b.notes ?? null]);
+    if (!r.rowCount) return notFound(reply);
+    await pool.query('insert into audit_log(actor, action, after) values ($1,$2,$3)', [u.username, 'cliente_editar', { id: cid, ...b }]); return { ok: true };
   });
   app.post('/hq/bookings', async (req, reply) => {
     const u = await need(req, reply); if (!u) return;
-    const b = z.object({ customerId: z.number().int().optional(), employeeId: z.string(), date, startMin: min, endMin: min, serviceIds: services, confirmConflicts: z.boolean().optional(), notify: z.boolean() }).parse(req.body);
+    const b = z.object({ customerId: z.number().int().optional(), customer: z.object({ name: z.string().trim().min(1).max(120), phone: z.string().trim().min(5).max(30), email: z.string().max(160).optional() }).optional(), notes: z.string().max(2000).optional(), employeeId: z.string(), date, startMin: min, endMin: min, serviceIds: services, confirmConflicts: z.boolean().optional(), notify: z.boolean() }).parse(req.body);
     if (u.role === 'barber') {
       if (b.employeeId !== u.employeeId) return forbidden(reply);
       if (b.customerId != null) { const k = await pool.query('select 1 from bookings where customer_id = $1 and employee_id = $2 limit 1', [b.customerId, u.employeeId]); if (!k.rowCount) return forbidden(reply); } // só clientes que já atendeu
     }
     const r = await svc.createHq({ ...b, actor: u.username, actorEmployeeId: u.employeeId, nowMs: clock() }); return reply.code(status(r)).send(r);
+  });
+  app.patch('/hq/bookings/:id', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return; const id = (req.params as any).id;
+    const b = z.object({ employeeId: z.string().optional(), date: date.optional(), startMin: min.optional(), serviceIds: services.optional(), notes: z.string().max(2000).optional(), status: z.enum(['confirmed', 'cancelled', 'noshow']).optional(), confirmConflicts: z.boolean().optional(), notify: z.boolean() }).parse(req.body);
+    if (!(await owns(u, id))) return notFound(reply);
+    const { confirmConflicts, notify, ...patch } = b;
+    const r = await svc.updateHq({ bookingId: id, actor: u.username, actorEmployeeId: u.employeeId, isAdmin: u.role === 'admin', patch, confirmConflicts, notify, nowMs: clock() });
+    return reply.code(!r.ok && r.error === 'sem_permissao' ? 403 : status(r)).send(r);
+  });
+  app.delete('/hq/bookings/:id', async (req, reply) => {
+    const u = await needAdmin(req, reply); if (!u) return; const id = (req.params as any).id;
+    const c = await pool.connect();
+    try {
+      await c.query('begin');
+      const r = await c.query('select 1 from bookings where id = $1 for update', [id]); if (!r.rowCount) { await c.query('rollback'); return notFound(reply); }
+      if ((await c.query('select 1 from sales where booking_id = $1', [id])).rowCount) { await c.query('rollback'); return reply.code(409).send({ ok: false, error: 'tem_atendimento_registado' }); }
+      await c.query('delete from bookings where id = $1', [id]);
+      await c.query('insert into audit_log(actor, action, booking_id) values ($1,$2,$3)', [u.username, 'apagar', id]); await c.query('commit'); return { ok: true };
+    } catch (e) { await c.query('rollback'); throw e; } finally { c.release(); }
   });
   app.post('/hq/bookings/:id/cancel', async (req, reply) => {
     const u = await need(req, reply); if (!u) return;

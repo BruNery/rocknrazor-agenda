@@ -53,6 +53,15 @@ async function lockEmployees(c: PoolClient, ids?: string[]) {
 const audit = (c: PoolClient, actor: string, action: string, bookingId: string, before: unknown, after: unknown, notified: boolean | null) =>
   c.query('insert into audit_log(actor, action, booking_id, before, after, notified) values ($1,$2,$3,$4,$5,$6)', [actor, action, bookingId, before ?? null, after ?? null, notified]);
 
+const digitsOf = (s: string) => s.replace(/\D/g, '');
+/** Cliente por telefone (compara os últimos 9 dígitos, ignorando o indicativo): reutiliza o existente (pontos e histórico ficam juntos) ou cria. */
+export async function upsertCustomer(c: PoolClient | Pool, d: { name: string; phone: string; email?: string }): Promise<number> {
+  const dg = digitsOf(d.phone).slice(-9);
+  if (dg.length >= 9) { const r = await c.query("select id from customers where right(regexp_replace(phone, '\\D', '', 'g'), 9) = $1 order by id limit 1", [dg]); if (r.rowCount) return Number(r.rows[0].id); }
+  const r = await c.query('insert into customers(name, phone, email) values ($1,$2,$3) returning id', [d.name.trim(), d.phone.trim(), d.email?.trim() || null]);
+  return Number(r.rows[0].id);
+}
+
 export class BookingService {
   constructor(private pool: Pool, private notifier: Notifier, private staff?: StaffNotifier) {}
 
@@ -103,14 +112,14 @@ export class BookingService {
       const ctx = await loadCtx(c, a.date, a.nowMs);
       const emp = a.employeeId ?? assignEmployee(a.date, a.startMin, a.serviceIds, ctx);
       if (!emp || !computeAvailability(a.date, a.serviceIds, emp, ctx).some(s => s.startMin === a.startMin)) return { ok: false as const, error: 'indisponivel' };
+      const customerId = await upsertCustomer(c, a.customer);
       const cap = ctx.rules!.maxOpenOnline;
       if (cap > 0) {
-        const open = await c.query("select count(*)::int n from bookings b join customers cu on cu.id = b.customer_id where cu.phone = $1 and b.source = 'online' and b.status = 'confirmed' and b.date >= $2", [a.customer.phone.trim(), todayLocal(a.nowMs)]);
+        const open = await c.query("select count(*)::int n from bookings where customer_id = $1 and source = 'online' and status = 'confirmed' and date >= $2", [customerId, todayLocal(a.nowMs)]);
         if (open.rows[0].n >= cap) return { ok: false as const, error: 'limite_marcacoes_abertas' };
       }
-      const cust = await c.query('insert into customers(name, phone) values ($1,$2) returning id', [a.customer.name.trim(), a.customer.phone.trim()]);
       const id = randomUUID(), end = a.startMin + totalDuration(a.serviceIds, emp, ctx);
-      await c.query("insert into bookings(id, employee_id, customer_id, date, start_min, end_min, service_ids, source) values ($1,$2,$3,$4,$5,$6,$7,'online')", [id, emp, cust.rows[0].id, a.date, a.startMin, end, a.serviceIds]);
+      await c.query("insert into bookings(id, employee_id, customer_id, date, start_min, end_min, service_ids, source) values ($1,$2,$3,$4,$5,$6,$7,'online')", [id, emp, customerId, a.date, a.startMin, end, a.serviceIds]);
       await audit(c, `cliente:${a.customer.name.trim()}`, 'criar', id, null, { employeeId: emp, date: a.date, startMin: a.startMin, endMin: end }, true);
       return { ok: true as const, bookingId: id, employeeId: emp };
     });
@@ -119,14 +128,15 @@ export class BookingService {
   }
 
   /** Marcação no HQ: com conflitos pede confirmação explícita (`confirmConflicts`), como o diálogo "Conflito de marcações". */
-  async createHq(a: { actor: string; actorEmployeeId?: string | null; customerId?: number; employeeId: string; date: DateStr; startMin: number; endMin: number; serviceIds: string[]; confirmConflicts?: boolean; notify: boolean; nowMs: number }): Promise<Result<{ bookingId: string }>> {
+  async createHq(a: { actor: string; actorEmployeeId?: string | null; customerId?: number; customer?: { name: string; phone: string; email?: string }; notes?: string; employeeId: string; date: DateStr; startMin: number; endMin: number; serviceIds: string[]; confirmConflicts?: boolean; notify: boolean; nowMs: number }): Promise<Result<{ bookingId: string }>> {
     const res = await tx(this.pool, async c => {
       await lockEmployees(c, [a.employeeId]);
       const ctx = await loadCtx(c, a.date, a.nowMs);
       const conflicts = findConflicts({ employeeId: a.employeeId, date: a.date, startMin: a.startMin, endMin: a.endMin, serviceIds: a.serviceIds }, ctx);
       if (conflicts.length && !a.confirmConflicts) return { ok: false as const, error: 'conflito', conflicts };
       const id = randomUUID();
-      await c.query("insert into bookings(id, employee_id, customer_id, date, start_min, end_min, service_ids, source) values ($1,$2,$3,$4,$5,$6,$7,'hq')", [id, a.employeeId, a.customerId ?? null, a.date, a.startMin, a.endMin, a.serviceIds]);
+      const customerId = a.customerId ?? (a.customer ? await upsertCustomer(c, a.customer) : null);
+      await c.query("insert into bookings(id, employee_id, customer_id, date, start_min, end_min, service_ids, source, notes) values ($1,$2,$3,$4,$5,$6,$7,'hq',$8)", [id, a.employeeId, customerId, a.date, a.startMin, a.endMin, a.serviceIds, a.notes ?? '']);
       await audit(c, a.actor, conflicts.length ? 'criar_com_conflito' : 'criar', id, null, { employeeId: a.employeeId, date: a.date, startMin: a.startMin, endMin: a.endMin }, a.notify);
       return { ok: true as const, bookingId: id };
     });
@@ -171,6 +181,33 @@ export class BookingService {
       return { ok: true as const };
     });
     if (res.ok) { if (a.notify) await this.notifier.send('rescheduled', a.bookingId); await this.tellBarber('rescheduled', a.bookingId, { employeeId: a.actorEmployeeId }); }
+    return res;
+  }
+
+  /** Edição completa da ficha pelo HQ: estado, notas, serviços, dia/hora e (só admin) barbeiro. Pede confirmação se houver conflito. */
+  async updateHq(a: { bookingId: string; actor: string; actorEmployeeId?: string | null; isAdmin: boolean; patch: { employeeId?: string; date?: DateStr; startMin?: number; serviceIds?: string[]; notes?: string; status?: 'confirmed' | 'cancelled' | 'noshow' }; confirmConflicts?: boolean; notify: boolean; nowMs: number }): Promise<Result<{}>> {
+    let kind: 'cancelled' | 'rescheduled' | null = null;
+    const res = await tx(this.pool, async c => {
+      await lockEmployees(c);
+      const r = await c.query("select employee_id, to_char(date,'YYYY-MM-DD') d, start_min, end_min, service_ids, status, notes from bookings where id = $1 for update", [a.bookingId]);
+      const b = r.rows[0]; if (!b) return { ok: false as const, error: 'nao_encontrada' };
+      const p = a.patch;
+      if (p.employeeId && p.employeeId !== b.employee_id && !a.isAdmin) return { ok: false as const, error: 'sem_permissao' };
+      const emp = p.employeeId ?? b.employee_id, date = p.date ?? b.d, start = p.startMin ?? b.start_min, svcIds: string[] = p.serviceIds ?? b.service_ids, status = p.status ?? b.status;
+      const ctx = await loadCtx(c, date, a.nowMs);
+      const changedSvc = p.serviceIds !== undefined && p.serviceIds.join() !== b.service_ids.join();
+      const moved = emp !== b.employee_id || date !== b.d || start !== b.start_min;
+      const end = changedSvc || emp !== b.employee_id ? start + totalDuration(svcIds, emp, ctx) : start + (b.end_min - b.start_min);
+      if (status !== 'cancelled' && (moved || changedSvc)) {
+        const cs = findConflicts({ employeeId: emp, date, startMin: start, endMin: end, serviceIds: svcIds, ignoreBookingId: a.bookingId }, ctx);
+        if (cs.length && !a.confirmConflicts) return { ok: false as const, error: 'conflito', conflicts: cs };
+      }
+      await c.query('update bookings set employee_id=$2, date=$3, start_min=$4, end_min=$5, service_ids=$6, status=$7, notes=$8 where id=$1', [a.bookingId, emp, date, start, end, svcIds, status, p.notes ?? b.notes]);
+      await audit(c, a.actor, status === 'cancelled' && b.status !== 'cancelled' ? 'cancelar' : moved ? 'reagendar' : 'editar', a.bookingId, { employeeId: b.employee_id, date: b.d, startMin: b.start_min, status: b.status }, { employeeId: emp, date, startMin: start, status }, a.notify);
+      if (status === 'cancelled' && b.status !== 'cancelled') kind = 'cancelled'; else if (moved) kind = 'rescheduled';
+      return { ok: true as const };
+    });
+    if (res.ok && kind) { if (a.notify) await this.notifier.send(kind, a.bookingId); await this.tellBarber(kind, a.bookingId, { employeeId: a.actorEmployeeId }); }
     return res;
   }
 }
