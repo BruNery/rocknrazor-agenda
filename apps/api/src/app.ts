@@ -13,7 +13,7 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const min = z.number().int().min(0).max(1440);
 const services = z.array(z.string().min(1)).min(1);
 
-export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean; staff?: StaffNotifier; vapidPublicKey?: string; publicDir?: string } = {}) {
+export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = Date.now, opts: { secureCookies?: boolean; staff?: StaffNotifier; vapidPublicKey?: string; publicDir?: string; clientDir?: string } = {}) {
   const secure = !!opts.secureCookies;
   const app = Fastify();
   const svc = new BookingService(pool, notifier, opts.staff);
@@ -25,16 +25,25 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
 
   // Público (Booking)
   app.get('/public/availability', async req => {
-    const q = z.object({ date, services: z.string().min(1), employeeId: z.string().optional() }).parse(req.query);
-    return { ok: true, slots: await svc.availability(q.date, q.services.split(','), q.employeeId, clock()) };
+    const q = z.object({ date, services: z.string().min(1), employeeId: z.string().optional(), ignore: z.string().optional() }).parse(req.query);
+    return { ok: true, slots: await svc.availability(q.date, q.services.split(','), q.employeeId, clock(), q.ignore) };
   });
   app.post('/public/holds', async (req, reply) => {
     const b = z.object({ date, startMin: min, serviceIds: services, employeeId: z.string().optional() }).parse(req.body);
     const r = await svc.hold({ ...b, nowMs: clock() }); return reply.code(status(r)).send(r);
   });
+  app.delete('/public/holds/:id', async (req, reply) => { await svc.releaseHold((req.params as any).id); return reply.send({ ok: true }); });
+  app.get('/public/availability/days', async req => {
+    const q = z.object({ from: date, days: z.coerce.number().int().min(1).max(31).default(14), services: z.string().min(1), employeeId: z.string().optional(), ignore: z.string().optional() }).parse(req.query);
+    return { ok: true, days: await svc.availabilityDays(q.from, q.days, q.services.split(','), q.employeeId, clock(), q.ignore) };
+  });
+  app.get('/public/bookings/:id', async (req, reply) => {
+    const b = await svc.publicBooking((req.params as any).id, clock()); if (!b) return reply.code(404).send({ ok: false, error: 'nao_encontrada' });
+    return reply.header('cache-control', 'no-store').send({ ok: true, booking: b });
+  });
   app.post('/public/bookings', async (req, reply) => {
-    const b = z.object({ customer: z.object({ name: z.string(), phone: z.string() }), date, startMin: min, serviceIds: services, employeeId: z.string().optional(), holdId: z.string().optional() }).parse(req.body);
-    const r = await svc.createOnline({ ...b, nowMs: clock() }); return reply.code(status(r)).send(r);
+    const b = z.object({ customer: z.object({ name: z.string().max(120), phone: z.string().max(40), email: z.string().max(120).optional() }), date, startMin: min, serviceIds: services, employeeId: z.string().optional(), holdId: z.string().optional() }).parse(req.body);
+    const r = await svc.createOnline({ ...b, nowMs: clock() }); return reply.code(status(r)).header('cache-control', 'no-store').send(r);
   });
   app.post('/public/bookings/:id/cancel', async (req, reply) => {
     const r = await svc.cancel({ bookingId: (req.params as any).id, by: 'customer', actor: 'cliente', notify: true, nowMs: clock() }); return reply.code(status(r)).send(r);
@@ -334,6 +343,6 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
     raw.on('close', () => { clearInterval(beat); watchers.delete(w); });
   });
   app.addHook('onClose', async () => { for (const w of watchers) { try { w.end(); } catch { /* já fechou */ } } watchers.clear(); });
-  if (opts.publicDir) registerStatic(app, opts.publicDir);
+  if (opts.publicDir) registerStatic(app, opts.publicDir, opts.clientDir);
   return app;
 }

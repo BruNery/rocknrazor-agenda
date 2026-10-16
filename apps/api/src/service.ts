@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
+import { newMemberCode } from './member';
 import { fmtWhen, type StaffNotifier } from './push';
-import { canCancelOrReschedule, todayLocal, type OnlineRules, computeAvailability, findConflicts, assignEmployee, totalDuration, type Conflict, type Ctx, type DateStr } from '@rr/domain';
+import { addDays, canCancelOrReschedule, todayLocal, type OnlineRules, computeAvailability, findConflicts, assignEmployee, totalDuration, type Conflict, type Ctx, type DateStr } from '@rr/domain';
 
 export interface Notifier { send(kind: 'created' | 'cancelled' | 'rescheduled', bookingId: string): Promise<void> }
 export class FakeNotifier implements Notifier { sent: { kind: string; bookingId: string }[] = []; async send(kind: any, bookingId: string) { this.sent.push({ kind, bookingId }); } }
@@ -39,6 +40,9 @@ async function loadCtx(db: PoolClient, date: DateStr, nowMs: number): Promise<Ct
   };
 }
 
+/** Para mudar a hora da própria marcação: ela não pode bloquear-se a si mesma. */
+const withoutBooking = (ctx: Ctx, id?: string): Ctx => (id ? { ...ctx, bookings: ctx.bookings.filter(b => b.id !== id) } : ctx);
+
 async function tx<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();
   try { await c.query('begin'); const r = await fn(c); await c.query('commit'); return r; }
@@ -55,11 +59,17 @@ const audit = (c: PoolClient, actor: string, action: string, bookingId: string, 
 
 const digitsOf = (s: string) => s.replace(/\D/g, '');
 /** Cliente por telefone (compara os últimos 9 dígitos, ignorando o indicativo): reutiliza o existente (pontos e histórico ficam juntos) ou cria. */
-export async function upsertCustomer(c: PoolClient | Pool, d: { name: string; phone: string; email?: string }): Promise<number> {
+export async function upsertCustomerEx(c: PoolClient | Pool, d: { name: string; phone: string; email?: string }): Promise<{ id: number; created: boolean }> {
   const dg = digitsOf(d.phone).slice(-9);
-  if (dg.length >= 9) { const r = await c.query("select id from customers where right(regexp_replace(phone, '\\D', '', 'g'), 9) = $1 order by id limit 1", [dg]); if (r.rowCount) return Number(r.rows[0].id); }
+  if (dg.length >= 9) { const r = await c.query("select id from customers where right(regexp_replace(phone, '\\D', '', 'g'), 9) = $1 order by id limit 1", [dg]); if (r.rowCount) return { id: Number(r.rows[0].id), created: false }; }
   const r = await c.query('insert into customers(name, phone, email) values ($1,$2,$3) returning id', [d.name.trim(), d.phone.trim(), d.email?.trim() || null]);
-  return Number(r.rows[0].id);
+  return { id: Number(r.rows[0].id), created: true };
+}
+export async function upsertCustomer(c: PoolClient | Pool, d: { name: string; phone: string; email?: string }): Promise<number> { return (await upsertCustomerEx(c, d)).id; }
+/** Dá um ID de membro (RNR-XXXXXX) ao cliente, repetindo se calhar igual a outro. */
+export async function ensureMemberCode(c: PoolClient, customerId: number): Promise<string> {
+  const cur = await c.query('select member_code from customers where id = $1', [customerId]); if (cur.rows[0]?.member_code) return cur.rows[0].member_code;
+  for (;;) { const code = newMemberCode(); try { await c.query('savepoint mc'); await c.query('update customers set member_code = $2 where id = $1', [customerId, code]); await c.query('release savepoint mc'); return code; } catch (e: any) { if (e.code !== '23505') throw e; await c.query('rollback to savepoint mc'); } }
 }
 
 export class BookingService {
@@ -82,9 +92,34 @@ export class BookingService {
     const r = await this.pool.query('select count(*)::int n from services where id = any($1) and active', [serviceIds]); return r.rows[0].n === new Set(serviceIds).size;
   }
 
-  async availability(date: DateStr, serviceIds: string[], employeeId: string | undefined, nowMs: number) {
+  async availability(date: DateStr, serviceIds: string[], employeeId: string | undefined, nowMs: number, ignoreBookingId?: string) {
     if (!(await this.allActive(serviceIds))) return [];
-    return tx(this.pool, async c => computeAvailability(date, serviceIds, employeeId, await loadCtx(c, date, nowMs)));
+    return tx(this.pool, async c => computeAvailability(date, serviceIds, employeeId, withoutBooking(await loadCtx(c, date, nowMs), ignoreBookingId)));
+  }
+
+  /** Quantas horas livres há em cada dia (para desativar os dias cheios na faixa de dias do Booking). Máx. 31 dias por pedido. */
+  async availabilityDays(from: DateStr, days: number, serviceIds: string[], employeeId: string | undefined, nowMs: number, ignoreBookingId?: string): Promise<Record<string, number>> {
+    const out: Record<string, number> = {}; const n = Math.max(1, Math.min(31, days));
+    if (!(await this.allActive(serviceIds))) { for (let i = 0; i < n; i++) out[addDays(from, i)] = 0; return out; }
+    return tx(this.pool, async c => { for (let i = 0; i < n; i++) { const d = addDays(from, i); out[d] = computeAvailability(d, serviceIds, employeeId, withoutBooking(await loadCtx(c, d, nowMs), ignoreBookingId)).length; } return out; });
+  }
+
+  /** Liberta uma reserva temporária (o cliente voltou atrás). */
+  async releaseHold(holdId: string) { await this.pool.query('delete from holds where id = $1', [holdId]); }
+
+  /** O que o cliente vê da sua marcação (quem tem o link/ID). Sem telefone nem ID de membro. */
+  async publicBooking(id: string, nowMs: number) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) return null;
+    const r = await this.pool.query(`select b.id, to_char(b.date,'YYYY-MM-DD') d, b.start_min, b.end_min, b.status, b.service_ids, e.id eid, e.name ename, e.nickname enick, c.name cname
+      from bookings b join employees e on e.id = b.employee_id left join customers c on c.id = b.customer_id where b.id = $1`, [id]);
+    const b = r.rows[0]; if (!b) return null;
+    const sv = await this.pool.query('select id, name, duration_min, price_cents from services where id = any($1)', [b.service_ids]);
+    const rules = await loadRules(this.pool);
+    const names = new Map(sv.rows.map(x => [x.id, x])); 
+    return { id: b.id, date: b.d, startMin: b.start_min, endMin: b.end_min, status: b.status as string, customerName: b.cname ?? '',
+      employee: { id: b.eid, name: b.ename, nickname: b.enick },
+      services: (b.service_ids as string[]).map(sid => { const s = names.get(sid); return { id: sid, name: s?.name ?? sid, durationMin: s?.duration_min ?? 0, priceCents: s?.price_cents ?? 0 }; }),
+      canChange: b.status === 'confirmed' && canCancelOrReschedule({ date: b.d, startMin: b.start_min }, nowMs, rules), cancelLeadMin: rules.cancelLeadMin };
   }
 
   /** Reserva temporária (duração definida no HQ) para o horário escolhido no Booking. */
@@ -103,7 +138,7 @@ export class BookingService {
   }
 
   /** Reserva online. Nunca sobrepõe. Se houver `holdId` próprio, é libertada e substituída pela marcação. */
-  async createOnline(a: { customer: { name: string; phone: string }; date: DateStr; startMin: number; serviceIds: string[]; employeeId?: string; holdId?: string; nowMs: number }): Promise<Result<{ bookingId: string; employeeId: string }>> {
+  async createOnline(a: { customer: { name: string; phone: string; email?: string }; date: DateStr; startMin: number; serviceIds: string[]; employeeId?: string; holdId?: string; nowMs: number }): Promise<Result<{ bookingId: string; employeeId: string; memberCode?: string }>> {
     if (!a.customer.name?.trim() || !a.customer.phone?.trim()) return { ok: false, error: 'nome_e_telefone_obrigatorios' };
     if (!(await this.allActive(a.serviceIds))) return { ok: false, error: 'indisponivel' };
     const res = await tx(this.pool, async c => {
@@ -112,7 +147,7 @@ export class BookingService {
       const ctx = await loadCtx(c, a.date, a.nowMs);
       const emp = a.employeeId ?? assignEmployee(a.date, a.startMin, a.serviceIds, ctx);
       if (!emp || !computeAvailability(a.date, a.serviceIds, emp, ctx).some(s => s.startMin === a.startMin)) return { ok: false as const, error: 'indisponivel' };
-      const customerId = await upsertCustomer(c, a.customer);
+      const { id: customerId, created } = await upsertCustomerEx(c, a.customer);
       const cap = ctx.rules!.maxOpenOnline;
       if (cap > 0) {
         const open = await c.query("select count(*)::int n from bookings where customer_id = $1 and source = 'online' and status = 'confirmed' and date >= $2", [customerId, todayLocal(a.nowMs)]);
@@ -121,7 +156,9 @@ export class BookingService {
       const id = randomUUID(), end = a.startMin + totalDuration(a.serviceIds, emp, ctx);
       await c.query("insert into bookings(id, employee_id, customer_id, date, start_min, end_min, service_ids, source) values ($1,$2,$3,$4,$5,$6,$7,'online')", [id, emp, customerId, a.date, a.startMin, end, a.serviceIds]);
       await audit(c, `cliente:${a.customer.name.trim()}`, 'criar', id, null, { employeeId: emp, date: a.date, startMin: a.startMin, endMin: end }, true);
-      return { ok: true as const, bookingId: id, employeeId: emp };
+      // O ID de membro só se mostra a quem acabou de ser registado: sem verificação do telemóvel, mostrá-lo a um número já conhecido deixava qualquer pessoa vê-lo.
+      const memberCode = created ? await ensureMemberCode(c, customerId) : undefined;
+      return { ok: true as const, bookingId: id, employeeId: emp, memberCode };
     });
     if (res.ok) { await this.notifier.send('created', res.bookingId); await this.tellBarber('created', res.bookingId); }
     return res;

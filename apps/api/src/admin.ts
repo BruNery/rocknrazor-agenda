@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
+import { newMemberCode } from './member';
 import { randomInt } from 'node:crypto';
 import { loadRules } from './service';
 import type { User } from './auth';
@@ -8,8 +9,7 @@ import { hashPassword } from './auth';
 
 const id = z.string().regex(/^[a-z0-9_-]{1,40}$/);
 const cents = z.number().int().min(0).max(1_000_000);
-const MEMBER_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sem 0/O/1/I
-export const newMemberCode = () => 'RNR-' + Array.from({ length: 6 }, () => MEMBER_ALPHABET[randomInt(MEMBER_ALPHABET.length)]).join('');
+export { newMemberCode };
 
 const rulesBody = z.object({
   gridMin: z.union([z.literal(5), z.literal(10), z.literal(15), z.literal(20), z.literal(30), z.literal(60)]),

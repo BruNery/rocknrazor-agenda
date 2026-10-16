@@ -13,6 +13,7 @@ const first = await firstRun(pool); if (first.length) console.log('Primeiro arra
 const { publicKey: pub, privateKey: priv } = await vapidKeys(pool);
 const staff = new PushStaffNotifier(pool, new WebPushSender(pub, priv, process.env.VAPID_SUBJECT ?? 'https://rockandrazor.com'), (m, e) => console.error(m, e));
 const publicDir = process.env.PUBLIC_DIR ?? fileURLToPath(new URL('../../hq/dist/pwa', import.meta.url));
-const app = buildApp(pool, new FakeNotifier(), Date.now, { secureCookies: process.env.NODE_ENV === 'production', staff, vapidPublicKey: pub, publicDir });
+const clientDir = process.env.CLIENT_DIR ?? fileURLToPath(new URL('../../booking/dist', import.meta.url));
+const app = buildApp(pool, new FakeNotifier(), Date.now, { secureCookies: process.env.NODE_ENV === 'production', staff, vapidPublicKey: pub, publicDir, clientDir });
 await app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' });
 console.log('Rock n\' Razor a ouvir');
