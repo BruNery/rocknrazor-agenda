@@ -31,6 +31,24 @@ export class Live {
   /** Há sessão? Se sim, carrega tudo. */
   async start(): Promise<boolean> { const c = await this.req('GET', '/hq/catalog'); if (c.status !== 200) { this.me = null; return false; } await this.hydrate(c.json); return true; }
 
+  /** Tempo real: o servidor avisa quando algo muda (EventSource); se a ligação cair, volta a abrir; e há uma verificação de segurança a cada 20 s. */
+  watch(onChange: () => void): () => void {
+    let es: EventSource | null = null, retry = 0, stopped = false, last = 0;
+    const fire = () => { last = Date.now(); onChange(); };
+    const open = () => {
+      if (stopped || typeof EventSource === 'undefined') return;
+      es?.close(); es = new EventSource(this.base + '/hq/events', { withCredentials: true });
+      es.addEventListener('change', fire);
+      es.addEventListener('hello', () => { if (Date.now() - last > 1500) fire(); }); // ao (re)ligar, apanha o que se perdeu entretanto
+      es.onerror = () => { if (es && es.readyState === 2) { es.close(); es = null; clearTimeout(retry); retry = window.setTimeout(open, 4000); } };
+    };
+    const wake = () => { if (document.visibilityState === 'visible') { if (!es || es.readyState !== 1) open(); fire(); } };
+    document.addEventListener('visibilitychange', wake); window.addEventListener('focus', wake); window.addEventListener('online', wake); window.addEventListener('pageshow', wake);
+    const poll = window.setInterval(() => { if (document.visibilityState === 'visible' && Date.now() - last > 15000) fire(); }, 20000);
+    open();
+    return () => { stopped = true; es?.close(); clearTimeout(retry); clearInterval(poll); document.removeEventListener('visibilitychange', wake); window.removeEventListener('focus', wake); window.removeEventListener('online', wake); window.removeEventListener('pageshow', wake); };
+  }
+
   async hydrate(pre?: any) {
     const today = this.store.today(), from = addDays(today, -WINDOW_BACK), to = addDays(today, WINDOW_FWD);
     const [c, bk, bl, sl] = await Promise.all([pre ? { status: 200, json: pre } : this.req('GET', '/hq/catalog'), this.req('GET', `/hq/bookings?from=${from}&to=${to}`), this.req('GET', `/hq/blocks?from=${from}&to=${to}`), this.req('GET', `/hq/sales?from=${from}&to=${to}`)]);

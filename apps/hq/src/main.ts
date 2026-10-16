@@ -286,7 +286,7 @@ $app.addEventListener('click', e => {
   const zm = t.closest<HTMLElement>('[data-zoom]'); if (zm) { S.zoom = Math.max(8, Math.min(32, S.zoom + Number(zm.dataset.zoom))); return render(); }
   const el = t.closest<HTMLElement>('[data-act]'); const act = el?.dataset.act; const val = el?.dataset.v;
   if (act === 'slot') { const tt = Number(el!.dataset.t); if (el!.dataset.for === 'd' && D) { D.start = tt; return render(); } const inp = document.getElementById(M?.kind === 'resched' ? 'r-time' : 'f-time') as HTMLInputElement | null; if (inp) { inp.value = fmt(tt); fillSlots(); } return; }
-  if (act === 'logout' && live) { live.logout().then(() => { S.auth = 'out'; S.loginErr = ''; render(); }); return; }
+  if (act === 'logout' && live) { stopWatch?.(); stopWatch = null; live.logout().then(() => { S.auth = 'out'; S.loginErr = ''; render(); }); return; }
   if (act === 'today') { S.date = store.today(); return render(); }
   if (act === 'theme') { const n = ({ system: 'light', light: 'dark', dark: 'system' } as const)[theme()]; try { localStorage.setItem('rr-theme', n); } catch {} applyTheme(n); return render(); }
   if (act === 'new') { M = { kind: 'new', name: '', phone: '', email: '', emp: S.emp, date: S.date, start: 600, svcs: ['corte'] }; return render(); }
@@ -334,7 +334,7 @@ $app.addEventListener('change', e => { const t = e.target as HTMLSelectElement;
   if (t.id === 'f-name' && M?.kind === 'new') { const c = store.customerByName(t.value); if (c) { (document.getElementById('f-phone') as HTMLInputElement).value = c.phone; (document.getElementById('f-email') as HTMLInputElement).value = c.email; } } });
 $app.addEventListener('submit', e => {
   e.preventDefault(); const f = e.target as HTMLFormElement; const v = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
-  if (live && f.id === 'loginf') { const u = v('l-user').trim(), pw = v('l-pw'); live.login(u, pw).then(async r => { if (r !== 'ok') { S.loginErr = r === 'credenciais' ? 'Utilizador ou palavra-passe errados.' : r === 'bloqueado' ? 'Demasiadas tentativas. Espera uns minutos.' : 'Não foi possível entrar. Tenta outra vez.'; return render(); } S.loginErr = ''; try { await live.hydrate(); S.auth = 'in'; afterLogin(); } catch { S.loginErr = 'Não foi possível abrir a agenda.'; S.auth = 'out'; } render(); }); return; }
+  if (live && f.id === 'loginf') { const u = v('l-user').trim(), pw = v('l-pw'); live.login(u, pw).then(async r => { if (r !== 'ok') { S.loginErr = r === 'credenciais' ? 'Utilizador ou palavra-passe errados.' : r === 'bloqueado' ? 'Demasiadas tentativas. Espera uns minutos.' : 'Não foi possível entrar. Tenta outra vez.'; return render(); } S.loginErr = ''; try { await live.hydrate(); S.auth = 'in'; afterLogin(); startWatch(); } catch { S.loginErr = 'Não foi possível abrir a agenda.'; S.auth = 'out'; } render(); }); return; }
   if (live && cfgSubmit(f, deps)) return;
   if (f.id === 'df') return saveDraft();
   if (f.id === 'salef' && M?.kind === 'sale') { const id = M.id; const items = readSale(f, id); M = null; const pay = (document.getElementById('s-pay') as HTMLSelectElement).value as any; if (live) { write(live.req('POST', `/hq/bookings/${id}/sale`, { payment: pay, items }), 'Atendimento registado'); return; } store.completeSale(id, items, pay); return toast('Atendimento registado'); }
@@ -396,5 +396,20 @@ function route() { const h = location.hash, client = h.startsWith('#/reservar') 
 window.addEventListener('hashchange', route); route();
 // versão instalável: regista o service worker (só quando a página traz o manifesto e está em http/https)
 if (document.querySelector('link[rel=manifest]') && 'serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
-if (live) { live.start().then(ok => { S.auth = ok ? 'in' : 'out'; if (ok) afterLogin(); render(); }).catch(() => { S.auth = 'out'; render(); }); }
+/** Atualização em tempo real: lê os dados de novo e redesenha sem tocar no que a pessoa está a escrever ou a arrastar. */
+let refreshing = false, again = false, stopWatch: (() => void) | null = null;
+async function refresh() {
+  if (!live || S.auth !== 'in') return;
+  if (refreshing) { again = true; return; }
+  if (document.querySelector('.blk.dragging')) { setTimeout(refresh, 1200); return; }
+  refreshing = true;
+  try { await live.hydrate(); } catch { refreshing = false; return; } // sem rede: tenta no próximo aviso
+  refreshing = false;
+  const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (!M && !D && !typing && (S.view === 'day' || S.view === 'week' || S.view === 'list' || S.view === 'dash')) render();
+  else { const a = document.getElementById('agenda'); if (a) { const st = [a.scrollTop, a.scrollLeft]; a.innerHTML = agendaHtml(); a.scrollTop = st[0]; a.scrollLeft = st[1]; } }
+  if (again) { again = false; refresh(); }
+}
+function startWatch() { stopWatch?.(); stopWatch = live ? live.watch(refresh) : null; }
+if (live) { live.start().then(ok => { S.auth = ok ? 'in' : 'out'; if (ok) { afterLogin(); startWatch(); } render(); }).catch(() => { S.auth = 'out'; render(); }); }
 if (API !== undefined) pushState().then(st => { S.push = st; render(); });

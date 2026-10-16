@@ -315,6 +315,25 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
     const mk = (a: string, b: string) => { const base = { from: a, to: b, bookings, sales, availableMinutes: mins(a, b) }; return who ? { total: barberMetrics({ ...base, employeeId: who }) } : shopMetrics(base, emps); };
     return { ok: true, scope: who ?? 'loja', period: { from: q.from, to: q.to }, current: mk(q.from, q.to), previous: mk(prev.from, prev.to), revenueByDay: revenueByDay(sales, who ? [who] : null, q.from, q.to) };
   });
+  // Tempo real: cada alteração (marcação criada/movida/cancelada, pausa, definições…) avisa de imediato todos os HQ abertos, que voltam a ler os dados.
+  // Só leva o aviso "mudou" (sem dados): cada ecrã volta a pedir o que lhe é permitido ver.
+  const watchers = new Set<{ write: (s: string) => void; end: () => void }>();
+  const ping = (what: string) => { for (const w of watchers) { try { w.write(`event: change\ndata: ${what}\n\n`); } catch { watchers.delete(w); } } };
+  app.addHook('onResponse', async (req, reply) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || reply.statusCode >= 400) return;
+    const p = req.url.split('?')[0]; if (p === '/public/holds' || p.startsWith('/auth/') || p.startsWith('/push/')) return;
+    if (p.startsWith('/hq/') || p.startsWith('/public/') || p.startsWith('/admin/')) ping(p);
+  });
+  app.get('/hq/events', async (req, reply) => {
+    const u = await need(req, reply); if (!u) return;
+    reply.hijack(); const raw = reply.raw;
+    raw.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+    raw.write('retry: 2000\n\nevent: hello\ndata: ok\n\n');
+    const w = { write: (x: string) => raw.write(x), end: () => raw.end() }; watchers.add(w);
+    const beat = setInterval(() => { try { raw.write(': ♥\n\n'); } catch { /* fecha abaixo */ } }, 20000);
+    raw.on('close', () => { clearInterval(beat); watchers.delete(w); });
+  });
+  app.addHook('onClose', async () => { for (const w of watchers) { try { w.end(); } catch { /* já fechou */ } } watchers.clear(); });
   if (opts.publicDir) registerStatic(app, opts.publicDir);
   return app;
 }

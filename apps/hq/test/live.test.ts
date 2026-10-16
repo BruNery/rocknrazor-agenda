@@ -128,6 +128,20 @@ describe('HQ ligado ao servidor', { timeout: 20000 }, () => {
     const slots = (await (await fetch(`${base}/public/availability?date=${d}&services=corte&employeeId=marcos`)).json()).slots as { startMin: number }[];
     expect(slots.some(s => s.startMin >= 780 && s.startMin < 840)).toBe(false);
   });
+  it('tempo real: uma marcação feita noutro aparelho aparece sozinha (sem recarregar) e não estraga o que se está a escrever', async () => {
+    const other = await open(); await other.waitForSelector('#loginf'); await login(other, 'bruno', PW); await other.waitForSelector('.agenda');
+    await other.evaluate(d => { (window as any).__rr.S.date = d; }, nextWed); await other.click('[data-zoom="2"]'); await other.click('[data-zoom="-2"]');
+    expect(await other.locator('.blk:has-text("Online Ana")').count()).toBe(0);
+    const mk = (name: string, startMin: number, phone: string) => fetch(`${base}/public/bookings`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ customer: { name, phone }, date: nextWed, startMin, serviceIds: ['corte'], employeeId: 'marcos' }) }).then(r => r.json());
+    expect((await mk('Online Ana', 840, '911000121')).ok).toBe(true); // outro aparelho (o cliente a marcar online)
+    await other.waitForSelector('.blk:has-text("Online Ana")', { timeout: 4000 });
+    // a escrever numa nova marcação: chega outra marcação e o formulário mantém o que estava escrito
+    await other.click('[data-act=new]'); await other.fill('#f-name', 'A escrever…');
+    expect((await mk('Online Beto', 900, '911000122')).ok).toBe(true);
+    await other.waitForSelector('.blk:has-text("Online Beto")', { timeout: 4000 });
+    expect(await other.inputValue('#f-name')).toBe('A escrever…');
+    await other.context().close();
+  });
   it('A minha conta: o administrador muda a própria palavra-passe (a atual errada é recusada)', async () => {
     const admin = await open(); await admin.waitForSelector('#loginf'); await login(admin, 'bruno', PW); await admin.waitForSelector('.agenda');
     await admin.click('[data-view=mine]'); await admin.waitForSelector('form[data-cfg=mypw]');
