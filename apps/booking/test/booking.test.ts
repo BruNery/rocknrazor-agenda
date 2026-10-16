@@ -90,10 +90,10 @@ describe('Área do cliente no telemóvel (390 px)', { timeout: 60000 }, () => {
   });
   it('Perfil: guarda dados, muda palavra-passe, sai e volta a entrar', async () => {
     await tab(p, 'Perfil'); await p.waitForSelector('#pff'); await shot(p, 'c-perfil'); await noOverflow(p);
-    await p.fill('#pff [name=name]', 'Rui S. Cliente'); await p.fill('#pff [name=email]', 'rui@exemplo.pt'); await p.click('#pff button'); await p.waitForSelector('.bk-okmsg');
+    await p.fill('#pff [name=name]', 'Rui S. Cliente'); await p.fill('#pff [name=email]', 'rui@exemplo.pt'); await p.click('#pff button'); await p.waitForSelector('.bk-okmsg:has-text("Dados guardados")');
     expect((await pool.query("select name, email from customers")).rows[0]).toEqual({ name: 'Rui S. Cliente', email: 'rui@exemplo.pt' });
     await p.fill('#pwf [name=current]', 'errada-errada'); await p.fill('#pwf [name=next]', 'nova-palavra-1'); await p.click('#pwf button'); await p.waitForSelector('.bk-err'); expect(await p.textContent('.bk-err')).toContain('atual');
-    await p.fill('#pwf [name=current]', PW); await p.fill('#pwf [name=next]', 'nova-palavra-1'); await p.click('#pwf button'); await p.waitForSelector('.bk-okmsg');
+    await p.fill('#pwf [name=current]', PW); await p.fill('#pwf [name=next]', 'nova-palavra-1'); await p.click('#pwf button'); await p.waitForSelector('.bk-okmsg:has-text("Palavra-passe alterada")');
     await p.click('[data-act=logout]'); await p.waitForSelector('#authf'); expect(await p.locator('.bk-tabs').count()).toBe(0);
     await p.fill('[name=phone]', '913357837'); await p.fill('[name=password]', PW); await p.click('#authf button[type=submit]'); await p.waitForSelector('.bk-err'); expect(await p.textContent('.bk-err')).toContain('errados'); // palavra-passe antiga já não serve
     await p.fill('[name=password]', 'nova-palavra-1'); await p.click('#authf button[type=submit]'); await p.waitForSelector('.bk-tabs');
