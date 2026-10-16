@@ -41,7 +41,7 @@ function lanes(items: B[]): Map<string, [number, number]> {
 
 function agendaHtml(): string {
   const cols = columns(), H = ((END - START) / 10) * S.zoom, z = S.zoom;
-  const tpl = `56px repeat(${cols.length}, minmax(130px, 1fr))`;
+  const tpl = `${matchMedia('(max-width: 700px)').matches ? 40 : 56}px repeat(${cols.length}, minmax(${matchMedia('(max-width: 700px)').matches ? 118 : 130}px, 1fr))`;
   let gut = ''; for (let m = START; m <= END; m += 20) gut += `<span class="${m % 60 === 0 ? 'h' : ''}" style="top:${((m - START) / 10) * z}px">${fmt(m)}</span>`;
   const now = store.nowMs(), nowMin = Math.floor((now - new Date(new Date(now).toDateString()).getTime()) / 60000);
   const colsHtml = cols.map((c, i) => {
@@ -55,7 +55,7 @@ function agendaHtml(): string {
     return `<div class="col ${open ? '' : 'closed'}" data-col="${i}" style="height:${H}px;background-size:100% ${z * 6}px">${open ? '' : '<div class="closedmsg">Fechado</div>'}${blocks}${bh}${nl}</div>`;
   }).join('');
   const head = cols.map(c => `<div>${esc(c.label)}${c.sub ? `<small>${esc(c.sub)}</small>` : ''}</div>`).join('');
-  return `<div class="head" style="grid-template-columns:${tpl}"><div style="border:0"></div>${head}</div><div class="cols" style="grid-template-columns:${tpl}"><div class="gutter" style="height:${H}px">${gut}</div>${colsHtml}</div>`;
+  return `<div class="head" style="grid-template-columns:${tpl};--n:${cols.length}"><div style="border:0"></div>${head}</div><div class="cols" style="grid-template-columns:${tpl};--n:${cols.length}"><div class="gutter" style="height:${H}px">${gut}</div>${colsHtml}</div>`;
 }
 
 function listHtml(): string {

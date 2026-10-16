@@ -20,6 +20,8 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overflow-x: hidden; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 var(--font-body); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 #app { display: flex; flex-direction: column; height: 100%; min-width: 0; }
 button, input, select { font: inherit; color: inherit; }
@@ -43,8 +45,8 @@ select.btn { padding-right: 6px; }
 
 .stage { display: flex; flex: 1 1 auto; min-height: 0; }
 .agenda { flex: 1 1 auto; min-width: 0; overflow: auto; position: relative; }
-.cols { display: grid; min-width: 640px; position: relative; padding-top: 12px; }
-.head { position: sticky; top: 0; z-index: 5; background: var(--bg); display: grid; border-bottom: 1px solid var(--border); min-width: 640px; }
+.cols { display: grid; min-width: calc(48px + var(--n, 5) * 130px); position: relative; padding-top: 12px; }
+.head { position: sticky; top: 0; z-index: 5; background: var(--bg); display: grid; border-bottom: 1px solid var(--border); min-width: calc(48px + var(--n, 5) * 130px); }
 .head div { padding: 10px 8px; font-weight: 700; border-left: 1px solid var(--grid); text-align: center; }
 .head div small { display: block; font-weight: 500; color: var(--muted); }
 .gutter { position: relative; }
@@ -208,3 +210,36 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .slotgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; max-height: 180px; overflow: auto; }
 .slot { border: 1px solid var(--border); background: var(--surface-2, transparent); color: inherit; border-radius: 8px; padding: 7px 0; font: inherit; font-size: .85rem; cursor: pointer; }
 .slot:hover { border-color: var(--gold, #C9A24B); } .slot.on { background: var(--gold, #C9A24B); color: #0A0605; border-color: var(--gold, #C9A24B); font-weight: 600; }
+
+/* Telemóvel: tudo cabe na largura do ecrã; só a agenda desliza para os lados (por dentro, com o cabeçalho colado ao topo). */
+@media (max-width: 700px) {
+  body { padding-left: max(10px, env(safe-area-inset-left, 0px)); padding-right: max(10px, env(safe-area-inset-right, 0px)); }
+  .top { gap: 8px; padding-block: 8px; }
+  .brand { font-size: 17px; margin-right: auto; }
+  .top > * { order: 2; } .top > .brand, .top > .who, .top > [data-act=logout] { order: 0; }
+  .top > .seg { order: 1; flex: 1 1 100%; max-width: 100%; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .top > .seg::-webkit-scrollbar { display: none; }
+  .top > .seg button { white-space: nowrap; flex: 0 0 auto; padding: 8px 12px; }
+  .btn { min-height: 38px; padding: 6px 10px; }
+  .date { min-width: 0; flex: 1 1 auto; text-align: center; font-size: 13px; }
+  .top .spacer { display: none; }
+  .top .who { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top select.btn { max-width: 100%; }
+  .cols, .head { min-width: calc(40px + var(--n, 5) * 118px); }
+  .gutter span { right: 4px; font-size: 10px; }
+  .head div { padding: 8px 4px; font-size: 13px; }
+  input, select, textarea { font-size: 16px; }
+  .list table { min-width: 0; font-size: 13px; }
+  .dh { padding: 12px 12px 6px; } .dh h2 { font-size: 18px; }
+  .db { grid-template-columns: minmax(0, 1fr); padding: 6px 12px 16px; gap: 8px; }
+  .dlg { padding: 16px; }
+  .two { grid-template-columns: minmax(0, 1fr); }
+  .line { flex-wrap: wrap; } .line input, .line select { max-width: 100%; }
+  .tools { grid-template-columns: 1fr 1fr; }
+  .top .btn.icon { padding: 6px 8px; min-width: 36px; } .top { gap: 6px; } .date { font-size: 12px; }
+  .top > [data-act=new] { position: fixed; right: max(14px, env(safe-area-inset-right, 0px)); bottom: max(16px, env(safe-area-inset-bottom, 0px)); z-index: 30; min-height: 48px; padding: 10px 18px; border-radius: 24px; box-shadow: var(--shadow); }
+  .toast { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+  .agenda { padding-bottom: 72px; } .list { padding-bottom: 72px; }
+  .df { flex-wrap: wrap; padding-inline: 12px; gap: 8px; } .df .spacer { display: none; } .df .btn.big { min-width: 0; flex: 1 1 100%; }
+  .df .btn { flex: 1 1 auto; }
+}
