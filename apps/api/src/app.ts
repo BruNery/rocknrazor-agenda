@@ -5,6 +5,7 @@ import type { Pool } from 'pg';
 import { BookingService, loadRules, type Notifier } from './service';
 import { registerAdmin } from './admin';
 import { registerStatic } from './static';
+import { registerClient } from './client';
 import type { StaffNotifier } from './push';
 import { barberMetrics, shopMetrics, revenueByDay, periodBefore, weekday, addDays, type Sale } from '@rr/domain';
 import { hashPassword, verifyPassword, DUMMY_HASH, createSession, userFromToken, sha, cookieToken, sessionCookie, clearCookie, MAX_FAILURES, FAILURE_WINDOW_MIN, type User } from './auth';
@@ -21,6 +22,7 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
 
   app.setErrorHandler((err: any, _req, reply) => reply.code(err.name === 'ZodError' ? 400 : 500).send({ ok: false, error: err.name === 'ZodError' ? 'pedido_invalido' : 'erro_interno', detalhe: err.name === 'ZodError' ? err.issues : undefined }));
 
+  registerClient(app, pool, svc, clock, secure);
   app.get('/healthz', async () => { await pool.query('select 1'); return { ok: true }; });
 
   // Público (Booking)
@@ -330,8 +332,8 @@ export function buildApp(pool: Pool, notifier: Notifier, clock: () => number = D
   const ping = (what: string) => { for (const w of watchers) { try { w.write(`event: change\ndata: ${what}\n\n`); } catch { watchers.delete(w); } } };
   app.addHook('onResponse', async (req, reply) => {
     if (req.method === 'GET' || req.method === 'HEAD' || reply.statusCode >= 400) return;
-    const p = req.url.split('?')[0]; if (p === '/public/holds' || p.startsWith('/auth/') || p.startsWith('/push/')) return;
-    if (p.startsWith('/hq/') || p.startsWith('/public/') || p.startsWith('/admin/')) ping(p);
+    const p = req.url.split('?')[0]; if (p === '/public/holds' || p.startsWith('/auth/') || p.startsWith('/client/login') || p.startsWith('/client/register') || p.startsWith('/push/')) return;
+    if (p.startsWith('/hq/') || p.startsWith('/public/') || p.startsWith('/admin/') || (p.startsWith('/client/bookings'))) ping(p);
   });
   app.get('/hq/events', async (req, reply) => {
     const u = await need(req, reply); if (!u) return;
