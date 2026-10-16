@@ -351,24 +351,40 @@ $app.addEventListener('submit', e => {
 $app.addEventListener('pointerdown', e => {
   const t = e.target as HTMLElement; const blk = t.closest<HTMLElement>('.blk'); const colEl = t.closest<HTMLElement>('.col');
   if (!colEl || D) return;
-  const cols = columns(); const ci = Number(colEl.dataset.col);
-  if (!blk) { if (colEl.classList.contains('closed')) return; const r = colEl.getBoundingClientRect(); const min = START + Math.floor(((e.clientY - r.top) / S.zoom)) * 10;
-    M = { kind: 'new', name: '', phone: '', email: '', emp: cols[ci].emp, date: cols[ci].date, start: Math.max(START, Math.min(END - 10, min)), svcs: ['corte'] }; return render(); }
+  const cols = columns(); const ci = Number(colEl.dataset.col); const touch = e.pointerType !== 'mouse';
+  const sx = e.clientX, sy = e.clientY;
+  // Hora livre: abre a nova marcação só quando o dedo/rato SOBE sem ter andado (assim, arrastar para deslizar a agenda não abre nada).
+  if (!blk) {
+    if (colEl.classList.contains('closed')) return;
+    const end = () => { window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', end); };
+    const up = (ev: PointerEvent) => { end(); if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > 8) return;
+      const r = colEl.getBoundingClientRect(); const min = START + Math.floor(((ev.clientY - r.top) / S.zoom)) * 10;
+      M = { kind: 'new', name: '', phone: '', email: '', emp: cols[ci].emp, date: cols[ci].date, start: Math.max(START, Math.min(END - 10, min)), svcs: ['corte'] }; render(); };
+    window.addEventListener('pointerup', up); window.addEventListener('pointercancel', end); return;
+  }
+  // Marcação: toque curto abre a ficha; no telemóvel, para mover é preciso carregar e segurar (~0,4 s) — deslizar normalmente continua a mexer na agenda.
   const id = blk.dataset.id!; const b = store.bookings.find(x => x.id === id)!;
-  const sx = e.clientX, sy = e.clientY, top0 = parseFloat(blk.style.top); let drag = false;
+  const top0 = parseFloat(blk.style.top); let drag = false; let armed = !touch; let timer = 0;
+  const stopScroll = (ev: TouchEvent) => { if (armed) ev.preventDefault(); };
+  const arm = () => { armed = true; blk.classList.add('dragging'); navigator.vibrate?.(15); };
+  if (touch) { timer = window.setTimeout(arm, 400); document.addEventListener('touchmove', stopScroll, { passive: false }); }
+  const cleanup = () => { clearTimeout(timer); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', cancel); document.removeEventListener('touchmove', stopScroll); };
   const move = (ev: PointerEvent) => {
-    if (!drag && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;
-    if (!drag) { drag = true; blk.classList.add('dragging'); blk.setPointerCapture(ev.pointerId); }
+    const far = Math.hypot(ev.clientX - sx, ev.clientY - sy);
+    if (!armed) { if (far > 8) { clearTimeout(timer); } return; } // dedo andou antes do tempo: é para deslizar, não para mover
+    if (!drag && far < 5) return;
+    if (!drag) { drag = true; blk.classList.add('dragging'); try { blk.setPointerCapture(ev.pointerId); } catch { /* ignora */ } }
     blk.style.top = `${top0 + Math.round((ev.clientY - sy) / S.zoom) * S.zoom}px`; blk.style.transform = `translateX(${ev.clientX - sx}px)`;
   };
+  const cancel = () => { cleanup(); blk.classList.remove('dragging'); blk.style.transform = ''; blk.style.top = `${top0}px`; };
   const up = (ev: PointerEvent) => {
-    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
-    if (!drag) { openDraft(id); return render(); }
+    cleanup();
+    if (!drag) { blk.classList.remove('dragging'); openDraft(id); return render(); }
     const rects = [...document.querySelectorAll<HTMLElement>('.col')].map(c => c.getBoundingClientRect()); let tgt = rects.findIndex(r => ev.clientX >= r.left && ev.clientX <= r.right); if (tgt < 0) tgt = ci;
     const start = Math.max(START, Math.min(END - (b.endMin - b.startMin), START + Math.round((top0 + Math.round((ev.clientY - sy) / S.zoom) * S.zoom) / S.zoom) * 10));
     tryMove(id, cols[tgt].emp, cols[tgt].date, start, 'Mover marcação');
   };
-  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', cancel);
 });
 document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; if (M) { M = M.kind === 'conflict' ? M.back : null; render(); } else if (D) { D = null; render(); } });
 

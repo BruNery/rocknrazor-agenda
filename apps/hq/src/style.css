@@ -55,7 +55,7 @@ select.btn { padding-right: 6px; }
 .col { position: relative; border-left: 1px solid var(--grid); cursor: cell; background-image: linear-gradient(var(--grid) 1px, transparent 1px); }
 .col.closed { background: var(--surface-2); cursor: default; }
 .closedmsg { position: absolute; inset: 20px 0 auto; text-align: center; color: var(--muted); font-weight: 600; }
-.blk { position: absolute; border-radius: 5px; padding: 3px 6px; overflow: hidden; color: var(--on-svc); background: var(--svc-outro); cursor: grab; touch-action: none; border: 1px solid rgba(0,0,0,.25); font-size: 12px; line-height: 1.25; user-select: none; }
+.blk { position: absolute; border-radius: 5px; padding: 3px 6px; overflow: hidden; color: var(--on-svc); background: var(--svc-outro); cursor: grab; -webkit-touch-callout: none; border: 1px solid rgba(0,0,0,.25); font-size: 12px; line-height: 1.25; user-select: none; }
 .blk.s-corte { background: var(--svc-corte); } .blk.s-trim { background: var(--svc-trim); } .blk.s-barba { background: var(--svc-barba); }
 .blk b { display: block; font-size: 13px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .blk .m { opacity: .92; font-variant-numeric: tabular-nums; }

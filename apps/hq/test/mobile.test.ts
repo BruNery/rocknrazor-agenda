@@ -68,6 +68,27 @@ describe('HQ no telemóvel (390 px)', { timeout: 30000 }, () => {
     await p.click('.blk'); await p.waitForSelector('.drawer'); await shot(p, 'm-ficha');
     o = await overflow(p); expect(o.scrollWidth, JSON.stringify(o)).toBeLessThanOrEqual(o.vw); expect(o.out, JSON.stringify(o)).toEqual([]);
   });
+  it('toque abre; deslizar na agenda faz scroll sem abrir nada (livre ou em cima de uma marcação)', async () => {
+    await p.keyboard.press('Escape'); await p.waitForSelector('.agenda'); await p.waitForSelector('.drawer', { state: 'detached' });
+    const cdp = await p.context().newCDPSession(p);
+    const touch = async (type: string, x: number, y: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x, y }] });
+    const swipe = async (x: number, y0: number, y1: number) => { await touch('touchStart', x, y0); for (let i = 1; i <= 8; i++) { await touch('touchMove', x, y0 + ((y1 - y0) * i) / 8); await p.waitForTimeout(16); } await touch('touchEnd', 0, 0); await p.waitForTimeout(250); };
+    const top = () => p.evaluate(() => document.getElementById('agenda')!.scrollTop);
+    const t0 = await top();
+    await swipe(300, 600, 300); // por cima de uma coluna vazia (Marcos/Margarida)
+    expect(await top(), 'a agenda tem de deslizar').toBeGreaterThan(t0 + 100);
+    expect(await p.locator('#newf').count(), 'deslizar não pode abrir a nova marcação').toBe(0);
+    await p.evaluate(() => { document.getElementById('agenda')!.scrollTop = 0; });
+    const b = await p.locator('.blk').first().boundingBox(); const bx = b!.x + b!.width / 2, by = b!.y + b!.height / 2;
+    const t1 = await top(); await swipe(bx, by + 40, by - 200);
+    expect(await top(), 'deslizar a partir de uma marcação também faz scroll').toBeGreaterThan(t1 + 50);
+    expect(await p.locator('.drawer').count(), 'e não abre a ficha').toBe(0);
+    await p.evaluate(() => { document.getElementById('agenda')!.scrollTop = 0; });
+    const b2 = await p.locator('.blk').first().boundingBox(); await touch('touchStart', b2!.x + 20, b2!.y + 10); await touch('touchEnd', 0, 0); await p.waitForSelector('.drawer'); // toque curto abre a ficha
+    await p.keyboard.press('Escape'); await p.waitForSelector('.drawer', { state: 'detached' });
+    const free = await p.locator('.col').nth(2).boundingBox(); await touch('touchStart', free!.x + 20, free!.y + 300); await touch('touchEnd', 0, 0); await p.waitForSelector('#newf'); // toque numa hora livre abre a nova marcação
+    await p.keyboard.press('Escape');
+  });
   it('definições cabem no ecrã', async () => {
     await p.reload(); await p.waitForSelector('.agenda'); await p.click('[data-view=cfg]'); await p.waitForTimeout(400); await shot(p, 'm-cfg');
     const o = await overflow(p); expect(o.scrollWidth, JSON.stringify(o)).toBeLessThanOrEqual(o.vw); expect(o.out, JSON.stringify(o)).toEqual([]);
